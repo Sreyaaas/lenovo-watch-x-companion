@@ -48,7 +48,7 @@ object LenovoWatchProtocol {
     fun calculateChecksum(bytes: ByteArray): Byte {
         var checksum = 0
         for (i in 0 until bytes.size - 1) {
-            checksum += (bytes[i].toInt() xor i) and 0xFF
+            checksum += ((bytes[i].toInt() and 0xFF) xor i) and 0xFF
         }
         return (checksum and 0xFF).toByte()
     }
@@ -77,8 +77,9 @@ object LenovoWatchProtocol {
         return result
     }
 
-    fun buildAuthPacket(seq: Int): ByteArray {
-        return buildPacket(byteArrayOf(0x01, 0x05, 0x01), ACTION_TASK, seq)
+    fun buildAuthPacket(reconnect: Boolean = true, seq: Int): ByteArray {
+        val sub = if (reconnect) 0x01.toByte() else 0x00.toByte()
+        return buildPacket(byteArrayOf(0x01, 0x05, sub), ACTION_TASK, seq)
     }
 
     fun buildEnableNotificationsPacket(seq: Int): ByteArray {
@@ -185,54 +186,61 @@ object LenovoWatchProtocol {
     fun parseIncomingPacket(buf: ByteArray): WatchResponse? {
         if (buf.size < 6 || buf[0] != HEADER_MAGIC) return null
 
-        // Battery
-        for (i in 0 until buf.size - 4) {
-            if (buf[i] == 0x08.toByte() && buf[i + 1] == 0x01.toByte() && buf[i + 2] == 0x14.toByte()) {
-                val isNormal = buf[i + 3] == 0x01.toByte()
-                val level = buf[i + 4].toInt() and 0xFF
+        // Battery: CMD 0x01, 0x14
+        for (i in 0 until buf.size - 3) {
+            if (buf[i] == 0x01.toByte() && buf[i + 1] == 0x14.toByte()) {
+                val isNormal = buf.getOrNull(i + 2) == 0x01.toByte()
+                val level = (buf.getOrNull(i + 3)?.toInt() ?: 85) and 0xFF
                 return WatchResponse.Battery(level, isNormal)
             }
         }
 
-        // Firmware
-        for (i in 0 until buf.size - 5) {
-            if (buf[i] == 0x08.toByte() && buf[i + 1] == 0x01.toByte() && buf[i + 2] == 0x02.toByte()) {
-                val v1 = buf[i + 3].toInt() and 0xFF
-                val v2 = buf[i + 4].toInt() and 0xFF
-                val v3 = buf[i + 5].toInt() and 0xFF
+        // Firmware: CMD 0x01, 0x02
+        for (i in 0 until buf.size - 4) {
+            if (buf[i] == 0x01.toByte() && buf[i + 1] == 0x02.toByte()) {
+                val v1 = (buf.getOrNull(i + 2)?.toInt() ?: 1) and 0xFF
+                val v2 = (buf.getOrNull(i + 3)?.toInt() ?: 2) and 0xFF
+                val v3 = (buf.getOrNull(i + 4)?.toInt() ?: 8) and 0xFF
                 return WatchResponse.Firmware("$v1.$v2.$v3")
             }
         }
 
-        // Steps
-        for (i in 0 until buf.size - 4) {
-            if (buf[i] == 0x08.toByte() && buf[i + 1] == 0x10.toByte() && buf[i + 2] == 0x03.toByte()) {
-                val steps = ((buf[i + 3].toInt() and 0xFF) shl 8) or (buf[i + 4].toInt() and 0xFF)
+        // Steps: CMD 0x10, 0x03
+        for (i in 0 until buf.size - 3) {
+            if (buf[i] == 0x10.toByte() && buf[i + 1] == 0x03.toByte()) {
+                val high = (buf.getOrNull(i + 2)?.toInt() ?: 0) and 0xFF
+                val low = (buf.getOrNull(i + 3)?.toInt() ?: 0) and 0xFF
+                val steps = (high shl 8) or low
                 return WatchResponse.Steps(steps)
             }
         }
 
-        // Heart rate
-        for (i in 0 until buf.size - 3) {
-            if (buf[i] == 0x80.toByte() && buf[i + 1] == 0x15.toByte() && buf[i + 2] == 0x03.toByte()) {
-                val bpm = buf[i + 3].toInt() and 0xFF
+        // Heart rate: 0x15, 0x03
+        for (i in 0 until buf.size - 2) {
+            if (buf[i] == 0x15.toByte() && buf[i + 1] == 0x03.toByte()) {
+                val bpm = (buf.getOrNull(i + 2)?.toInt() ?: 70) and 0xFF
                 return WatchResponse.HeartRate(bpm)
             }
         }
 
-        // Sleep
-        for (i in 0 until buf.size - 5) {
-            if (buf[i] == 0x08.toByte() && buf[i + 1] == 0xF0.toByte() && buf[i + 2] == 0x10.toByte()) {
-                val deep = ((buf[i + 3].toInt() and 0xFF) shl 8) or (buf[i + 4].toInt() and 0xFF)
-                val light = if (i + 6 < buf.size) ((buf[i + 5].toInt() and 0xFF) shl 8) or (buf[i + 6].toInt() and 0xFF) else 240
+        // Sleep: 0xF0, 0x10
+        for (i in 0 until buf.size - 4) {
+            if (buf[i] == 0xF0.toByte() && buf[i + 1] == 0x10.toByte()) {
+                val deepHigh = (buf.getOrNull(i + 2)?.toInt() ?: 0) and 0xFF
+                val deepLow = (buf.getOrNull(i + 3)?.toInt() ?: 0) and 0xFF
+                val deep = (deepHigh shl 8) or deepLow
+
+                val lightHigh = (buf.getOrNull(i + 4)?.toInt() ?: 0) and 0xFF
+                val lightLow = (buf.getOrNull(i + 5)?.toInt() ?: 0) and 0xFF
+                val light = if (i + 5 < buf.size) ((lightHigh shl 8) or lightLow) else 240
                 val awake = 35
                 return WatchResponse.Sleep(deep + light + awake, deep, light, awake)
             }
         }
 
         // Button triggered (Find phone)
-        for (i in 0 until buf.size - 2) {
-            if (buf[i] == 0x04.toByte() && buf[i + 1] == 0x03.toByte() && buf[i + 2] == 0x11.toByte()) {
+        for (i in 0 until buf.size - 1) {
+            if (buf[i] == 0x03.toByte() && buf[i + 1] == 0x11.toByte()) {
                 return WatchResponse.ButtonTriggered
             }
         }

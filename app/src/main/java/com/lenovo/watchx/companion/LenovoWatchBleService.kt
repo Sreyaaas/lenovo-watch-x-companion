@@ -23,9 +23,13 @@ import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.UUID
 
 data class SleepSession(
     val totalMinutes: Int = 462,   // ~7h 42m
@@ -64,6 +68,13 @@ class LenovoWatchBleService : Service() {
     private var notifyCharacteristic: BluetoothGattCharacteristic? = null
 
     private var seq = 1
+
+    private val writeChannel = Channel<ByteArray>(Channel.UNLIMITED)
+    private val writeMutex = Mutex()
+    private var writeCompletionDeferred: CompletableDeferred<Boolean>? = null
+    private var queueWorkerJob: Job? = null
+    private var initializationJob: Job? = null
+    private var periodicSyncJob: Job? = null
 
     // State flows
     private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
@@ -126,6 +137,9 @@ class LenovoWatchBleService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        periodicSyncJob?.cancel()
+        initializationJob?.cancel()
+        queueWorkerJob?.cancel()
         serviceScope.cancel()
         disconnect()
         stopForegroundSafely()
@@ -210,24 +224,33 @@ class LenovoWatchBleService : Service() {
             _connectionState.value = BleConnectionState.SCANNING
             discoveredDevices.value = emptyList()
 
-            val filter = ScanFilter.Builder()
-                .setServiceUuid(ParcelUuid(LenovoWatchProtocol.UUID_SERVICE))
-                .build()
+            val filters = mutableListOf<ScanFilter>()
+            filters.add(
+                ScanFilter.Builder()
+                    .setServiceUuid(ParcelUuid(LenovoWatchProtocol.UUID_SERVICE))
+                    .build()
+            )
+            listOf("Watch X", "WATCH X", "WATCH XPLUS", "Watch 9", "Lenovo Watch").forEach { name ->
+                filters.add(ScanFilter.Builder().setDeviceName(name).build())
+            }
+
             val settings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .build()
 
-            scanner.startScan(listOf(filter), settings, scanCallback)
+            Log.i(TAG, "Starting BLE scan for Lenovo Watch devices")
+            scanner.startScan(filters, settings, scanCallback)
 
-            // Fallback scan after 3s without filter to discover all nearby devices
+            // Fallback scan after 3s with broader filter if nothing found yet
             serviceScope.launch {
                 delay(3000)
                 if (discoveredDevices.value.isEmpty() && _connectionState.value == BleConnectionState.SCANNING) {
                     try {
+                        Log.i(TAG, "Broadening BLE scan...")
                         scanner.stopScan(scanCallback)
                         scanner.startScan(scanCallback)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Fallback scan failed", e)
+                        Log.w(TAG, "Fallback broad scan failed: ${e.message}")
                     }
                 }
             }
@@ -256,8 +279,11 @@ class LenovoWatchBleService : Service() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             try {
                 val device = result?.device ?: return
-                val name = device.name ?: result.scanRecord?.deviceName ?: "Watch X"
+                val name = device.name ?: result.scanRecord?.deviceName ?: "Lenovo Watch"
                 val address = device.address ?: return
+                val rssi = result.rssi
+
+                Log.d(TAG, "Discovered device: '$name' ($address) RSSI: $rssi dBm")
 
                 val current = discoveredDevices.value.toMutableList()
                 if (current.none { it.second == address }) {
@@ -267,6 +293,11 @@ class LenovoWatchBleService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onScanResult", e)
             }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            Log.e(TAG, "BLE Scan failed: $errorCode")
+            _connectionState.value = BleConnectionState.DISCONNECTED
         }
     }
 
@@ -279,8 +310,17 @@ class LenovoWatchBleService : Service() {
 
         stopScan()
         _connectionState.value = BleConnectionState.CONNECTING
+        Log.i(TAG, "Connecting to watch at $macAddress")
 
         return try {
+            try {
+                bluetoothGatt?.disconnect()
+                bluetoothGatt?.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Closing previous gatt instance", e)
+            }
+            bluetoothGatt = null
+
             val device = bluetoothAdapter?.getRemoteDevice(macAddress) ?: return false
 
             getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -299,6 +339,14 @@ class LenovoWatchBleService : Service() {
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
+        Log.i(TAG, "Disconnect requested")
+        periodicSyncJob?.cancel()
+        periodicSyncJob = null
+        initializationJob?.cancel()
+        initializationJob = null
+        queueWorkerJob?.cancel()
+        queueWorkerJob = null
+
         try {
             bluetoothGatt?.disconnect()
             bluetoothGatt?.close()
@@ -306,6 +354,8 @@ class LenovoWatchBleService : Service() {
             Log.e(TAG, "Error disconnecting GATT", e)
         } finally {
             bluetoothGatt = null
+            writeCharacteristic = null
+            notifyCharacteristic = null
             _connectionState.value = BleConnectionState.DISCONNECTED
             stopForegroundSafely()
         }
@@ -314,15 +364,34 @@ class LenovoWatchBleService : Service() {
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
+            Log.i(TAG, "onConnectionStateChange: status=$status newState=$newState device=${gatt?.device?.address}")
             try {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    Log.i(TAG, "Connected to watch. Discovering GATT services...")
+                    Log.i(TAG, "Connected to watch. Requesting HIGH priority & discovering GATT services...")
+                    gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                     startForegroundSafely()
-                    bluetoothGatt?.discoverServices()
+
+                    // Android BLE best practice: 300ms delay before discoverServices
+                    serviceScope.launch {
+                        delay(300)
+                        gatt?.discoverServices()
+                    }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    Log.w(TAG, "Disconnected from watch.")
+                    Log.w(TAG, "Disconnected from watch (status=$status).")
                     _connectionState.value = BleConnectionState.DISCONNECTED
                     stopForegroundSafely()
+                    periodicSyncJob?.cancel()
+                    periodicSyncJob = null
+                    initializationJob?.cancel()
+                    initializationJob = null
+                    try {
+                        gatt?.close()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error closing GATT", e)
+                    }
+                    bluetoothGatt = null
+                    writeCharacteristic = null
+                    notifyCharacteristic = null
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onConnectionStateChange", e)
@@ -331,94 +400,297 @@ class LenovoWatchBleService : Service() {
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
+            Log.i(TAG, "onServicesDiscovered: status=$status")
+            if (status != BluetoothGatt.GATT_SUCCESS || gatt == null) {
+                Log.e(TAG, "Service discovery failed with status $status")
+                return
+            }
+
             try {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    val service = gatt?.getService(LenovoWatchProtocol.UUID_SERVICE)
-                    if (service != null) {
-                        writeCharacteristic = service.getCharacteristic(LenovoWatchProtocol.UUID_WRITE)
-                        notifyCharacteristic = service.getCharacteristic(LenovoWatchProtocol.UUID_NOTIFY)
-
-                        notifyCharacteristic?.let { char ->
-                            gatt.setCharacteristicNotification(char, true)
-                            val descriptor = char.getDescriptor(LenovoWatchProtocol.UUID_CCCD)
-                            if (descriptor != null) {
-                                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                                gatt.writeDescriptor(descriptor)
-                            }
-                        }
-
-                        _connectionState.value = BleConnectionState.CONNECTED
-                        Log.i(TAG, "Lenovo Watch X initialization pipeline starting.")
-
-                        // Non-blocking query sequence on background coroutine
-                        serviceScope.launch {
-                            sendPacket(LenovoWatchProtocol.buildAuthPacket(seq++))
-                            delay(120)
-                            sendPacket(LenovoWatchProtocol.buildEnableNotificationsPacket(seq++))
-                            delay(120)
-                            sendPacket(LenovoWatchProtocol.buildFirmwareQueryPacket(seq++))
-                            delay(120)
-                            sendPacket(LenovoWatchProtocol.buildBatteryQueryPacket(seq++))
-                            delay(120)
-                            sendPacket(LenovoWatchProtocol.buildStepsQueryPacket(seq++))
-                            delay(120)
-                            sendPacket(LenovoWatchProtocol.buildSleepQueryPacket(seq++))
-                        }
-                    }
+                val service = gatt.getService(LenovoWatchProtocol.UUID_SERVICE)
+                if (service == null) {
+                    Log.e(TAG, "Service ${LenovoWatchProtocol.UUID_SERVICE} not found!")
+                    gatt.services?.forEach { s -> Log.d(TAG, "Found service: ${s.uuid}") }
+                    return
                 }
+
+                writeCharacteristic = service.getCharacteristic(LenovoWatchProtocol.UUID_WRITE)
+                notifyCharacteristic = service.getCharacteristic(LenovoWatchProtocol.UUID_NOTIFY)
+
+                Log.i(TAG, "GATT Services mapped: Write=${writeCharacteristic?.uuid}, Notify=${notifyCharacteristic?.uuid}")
+
+                val notifyChar = notifyCharacteristic ?: run {
+                    Log.e(TAG, "Notify characteristic not found!")
+                    return
+                }
+
+                // 1. Enable local notifications
+                val localNotifSuccess = gatt.setCharacteristicNotification(notifyChar, true)
+                Log.i(TAG, "setCharacteristicNotification returned $localNotifSuccess")
+
+                // 2. Write CCCD Descriptor (0x2902) to notify peripheral
+                val descriptor = notifyChar.getDescriptor(LenovoWatchProtocol.UUID_CCCD)
+                if (descriptor == null) {
+                    Log.e(TAG, "CCCD descriptor not found on notify characteristic!")
+                    return
+                }
+
+                val descWriteStarted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val res = gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    Log.i(TAG, "writeDescriptor (API 33+) result: $res")
+                    res == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION")
+                    val res = gatt.writeDescriptor(descriptor)
+                    Log.i(TAG, "writeDescriptor (legacy) result: $res")
+                    res
+                }
+
+                if (!descWriteStarted) {
+                    Log.e(TAG, "Failed to start descriptor write")
+                }
+                // IMPORTANT: Do NOT send packets here! Wait for onDescriptorWrite callback!
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onServicesDiscovered", e)
             }
         }
 
-        override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
-            try {
-                val value = characteristic?.value ?: return
-                val parsed = LenovoWatchProtocol.parseIncomingPacket(value) ?: return
+        override fun onDescriptorWrite(gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int) {
+            val statusStr = if (status == BluetoothGatt.GATT_SUCCESS) "SUCCESS" else "ERROR($status)"
+            Log.i(TAG, "onDescriptorWrite: uuid=${descriptor?.uuid}, status=$statusStr")
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                _connectionState.value = BleConnectionState.CONNECTED
+                Log.i(TAG, "CCCD descriptor write confirmed. Watch radio is ready, starting initialization pipeline!")
+                startInitializationSequence()
+            } else {
+                Log.e(TAG, "CCCD descriptor write failed with status $status")
+            }
+        }
 
-                when (parsed) {
-                    is WatchResponse.Battery -> {
-                        _batteryLevel.value = parsed.levelPercent
-                    }
-                    is WatchResponse.Firmware -> {
-                        _firmwareVersion.value = parsed.version
-                    }
-                    is WatchResponse.Steps -> {
-                        _todaySteps.value = parsed.count
-                    }
-                    is WatchResponse.HeartRate -> {
-                        _heartRateBpm.value = parsed.bpm
-                        _isMeasuringHr.value = false
-                    }
-                    is WatchResponse.Sleep -> {
-                        _sleepSession.value = SleepSession(
-                            totalMinutes = parsed.totalMinutes,
-                            deepMinutes = parsed.deepMinutes,
-                            lightMinutes = parsed.lightMinutes,
-                            awakeMinutes = parsed.awakeMinutes,
-                            score = (parsed.deepMinutes * 100 / parsed.totalMinutes.coerceAtLeast(1)).coerceIn(60, 99)
-                        )
-                    }
-                    is WatchResponse.ButtonTriggered -> {
-                        triggerFindPhoneAlarm()
-                    }
-                    is WatchResponse.Ack -> {}
+        override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
+            val statusStr = if (status == BluetoothGatt.GATT_SUCCESS) "SUCCESS" else "ERROR($status)"
+            Log.d(TAG, "onCharacteristicWrite: uuid=${characteristic?.uuid}, status=$statusStr")
+            writeCompletionDeferred?.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        // Android 13+ (API 33+)
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            onIncomingPacket(characteristic.uuid, value)
+        }
+
+        // Android 12 and below
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt?,
+            characteristic: BluetoothGattCharacteristic?
+        ) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                val value = characteristic?.value ?: return
+                val uuid = characteristic.uuid ?: return
+                onIncomingPacket(uuid, value)
+            }
+        }
+    }
+
+    private fun onIncomingPacket(uuid: UUID, value: ByteArray) {
+        try {
+            val hex = value.joinToString(" ") { "%02X".format(it) }
+            Log.i(TAG, "RX notification [${value.size} bytes] on $uuid: $hex")
+
+            val parsed = LenovoWatchProtocol.parseIncomingPacket(value) ?: run {
+                Log.w(TAG, "Packet unparsed: $hex")
+                return
+            }
+
+            Log.i(TAG, "Parsed WatchResponse: $parsed")
+
+            when (parsed) {
+                is WatchResponse.Battery -> {
+                    _batteryLevel.value = parsed.levelPercent
+                    Log.i(TAG, "Updated battery: ${parsed.levelPercent}% (normal=${parsed.isNormal})")
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in onCharacteristicChanged", e)
+                is WatchResponse.Firmware -> {
+                    _firmwareVersion.value = parsed.version
+                    Log.i(TAG, "Updated firmware: v${parsed.version}")
+                }
+                is WatchResponse.Steps -> {
+                    _todaySteps.value = parsed.count
+                    Log.i(TAG, "Updated step count: ${parsed.count}")
+                }
+                is WatchResponse.HeartRate -> {
+                    _heartRateBpm.value = parsed.bpm
+                    _isMeasuringHr.value = false
+                    Log.i(TAG, "Updated heart rate: ${parsed.bpm} bpm")
+                }
+                is WatchResponse.Sleep -> {
+                    _sleepSession.value = SleepSession(
+                        totalMinutes = parsed.totalMinutes,
+                        deepMinutes = parsed.deepMinutes,
+                        lightMinutes = parsed.lightMinutes,
+                        awakeMinutes = parsed.awakeMinutes,
+                        score = (parsed.deepMinutes * 100 / parsed.totalMinutes.coerceAtLeast(1)).coerceIn(60, 99)
+                    )
+                    Log.i(TAG, "Updated sleep telemetry: ${parsed.totalMinutes} min")
+                }
+                is WatchResponse.ButtonTriggered -> {
+                    Log.i(TAG, "Watch button pressed! Triggering find phone alarm")
+                    triggerFindPhoneAlarm()
+                }
+                is WatchResponse.Ack -> {
+                    Log.d(TAG, "Received ACK packet from watch")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in onIncomingPacket", e)
+        }
+    }
+
+    @Synchronized
+    private fun startQueueWorkerIfNeeded() {
+        if (queueWorkerJob?.isActive == true) return
+        queueWorkerJob = serviceScope.launch {
+            Log.i(TAG, "BLE Write Queue worker started")
+            for (packet in writeChannel) {
+                val gatt = bluetoothGatt
+                val char = writeCharacteristic
+                if (gatt == null || char == null) {
+                    Log.w(TAG, "Dropping packet: GATT or writeCharacteristic is null")
+                    continue
+                }
+
+                writeMutex.withLock {
+                    val deferred = CompletableDeferred<Boolean>()
+                    writeCompletionDeferred = deferred
+
+                    val success = sendPacketInternal(gatt, char, packet)
+                    if (success) {
+                        withTimeoutOrNull(300) {
+                            deferred.await()
+                        }
+                    } else {
+                        Log.w(TAG, "sendPacketInternal returned false")
+                    }
+                    writeCompletionDeferred = null
+                }
+                delay(60)
             }
         }
     }
 
     @SuppressLint("MissingPermission")
-    fun sendPacket(packet: ByteArray) {
-        try {
-            val gatt = bluetoothGatt ?: return
-            val char = writeCharacteristic ?: return
-            char.value = packet
-            gatt.writeCharacteristic(char)
+    private fun sendPacketInternal(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, packet: ByteArray): Boolean {
+        val hex = packet.joinToString(" ") { "%02X".format(it) }
+        val writeType = if ((char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        }
+
+        Log.d(TAG, "TX [${packet.size}b] (writeType=$writeType): $hex")
+
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val res = gatt.writeCharacteristic(char, packet, writeType)
+                val isSuccess = res == BluetoothStatusCodes.SUCCESS
+                if (!isSuccess) {
+                    Log.e(TAG, "gatt.writeCharacteristic (API 33+) failed with code: $res")
+                }
+                isSuccess
+            } else {
+                @Suppress("DEPRECATION")
+                char.writeType = writeType
+                @Suppress("DEPRECATION")
+                char.value = packet
+                @Suppress("DEPRECATION")
+                val res = gatt.writeCharacteristic(char)
+                if (!res) {
+                    Log.e(TAG, "gatt.writeCharacteristic (legacy) returned false")
+                }
+                res
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Error sending packet: ${e.message}")
+            Log.e(TAG, "Exception during writeCharacteristic", e)
+            false
+        }
+    }
+
+    fun sendPacket(packet: ByteArray) {
+        startQueueWorkerIfNeeded()
+        writeChannel.trySend(packet)
+    }
+
+    private fun startInitializationSequence() {
+        initializationJob?.cancel()
+        initializationJob = serviceScope.launch {
+            Log.i(TAG, "==================== WATCH X INIT PIPELINE START ====================")
+            
+            // 1. Send Handshake / Auth Packet (reconnect)
+            Log.i(TAG, "Step 1/7: Sending Auth Reconnect Packet")
+            sendPacket(LenovoWatchProtocol.buildAuthPacket(reconnect = true, seq = seq++))
+            delay(150)
+
+            // Step 1b: Also send initial pairing packet if watch was unpaired
+            sendPacket(LenovoWatchProtocol.buildAuthPacket(reconnect = false, seq = seq++))
+            delay(150)
+
+            // 2. Enable Notifications in Watch Firmware
+            Log.i(TAG, "Step 2/7: Enabling Firmware Notifications")
+            sendPacket(LenovoWatchProtocol.buildEnableNotificationsPacket(seq = seq++))
+            delay(150)
+
+            // 3. Immediately Synchronize Watch Clock to Phone Time
+            Log.i(TAG, "Step 3/7: Synchronizing Watch Clock (Real Time & Motors)")
+            sendPacket(LenovoWatchProtocol.buildSetTimePacket(seq = seq++))
+            delay(150)
+
+            // 4. Query Firmware Version
+            Log.i(TAG, "Step 4/7: Querying Firmware Version")
+            sendPacket(LenovoWatchProtocol.buildFirmwareQueryPacket(seq = seq++))
+            delay(150)
+
+            // 5. Query Battery Level
+            Log.i(TAG, "Step 5/7: Querying Battery Level")
+            sendPacket(LenovoWatchProtocol.buildBatteryQueryPacket(seq = seq++))
+            delay(150)
+
+            // 6. Query Today's Steps
+            Log.i(TAG, "Step 6/7: Querying Pedometer Steps")
+            sendPacket(LenovoWatchProtocol.buildStepsQueryPacket(seq = seq++))
+            delay(150)
+
+            // 7. Query Sleep Data
+            Log.i(TAG, "Step 7/7: Querying Sleep Telemetry")
+            sendPacket(LenovoWatchProtocol.buildSleepQueryPacket(seq = seq++))
+            delay(500)
+
+            // Lower connection priority to BALANCED to save watch battery
+            Log.i(TAG, "Initialization complete. Switching to BALANCED BLE connection priority")
+            bluetoothGatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+
+            // Start periodic sync (steps & battery every 45s as keep-alive)
+            startPeriodicSync()
+            Log.i(TAG, "==================== WATCH X READY & ACTIVE ====================")
+        }
+    }
+
+    private fun startPeriodicSync() {
+        periodicSyncJob?.cancel()
+        periodicSyncJob = serviceScope.launch {
+            while (_connectionState.value == BleConnectionState.CONNECTED) {
+                delay(45_000)
+                if (_connectionState.value == BleConnectionState.CONNECTED) {
+                    Log.d(TAG, "Periodic keep-alive & telemetry sync")
+                    querySteps()
+                    delay(300)
+                    sendPacket(LenovoWatchProtocol.buildBatteryQueryPacket(seq++))
+                }
+            }
         }
     }
 
