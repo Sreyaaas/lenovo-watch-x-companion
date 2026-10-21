@@ -10,6 +10,8 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,8 +27,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -35,12 +38,33 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 
+/* ========================================================================= */
+/* --- APPLE DESIGN SYSTEM PALETTE ---                                       */
+/* ========================================================================= */
+
+object AppleTheme {
+    val Black = Color(0xFF000000)
+    val CardDark = Color(0xFF121214)
+    val InsetDark = Color(0xFF1C1C1E)
+    val Border = Color(0xFF2C2C2E)
+    val Divider = Color(0xFF2C2C2E)
+    val TextPrimary = Color(0xFFFFFFFF)
+    val TextSecondary = Color(0xFF8E8E93)
+    val TextTertiary = Color(0xFF636366)
+
+    val CoralRed = Color(0xFFFF453A)      // Apple Activity Ring Red
+    val NeonGreen = Color(0xFF30D158)     // Apple Success / Battery / Activity Green
+    val ElectricBlue = Color(0xFF0A84FF)  // Apple System Blue / Activity Blue
+    val CardioPink = Color(0xFFFF2D55)    // Apple Health Heart Rate Pink
+    val SleepIndigo = Color(0xFF5E5CE6)   // Apple Sleep Purple/Indigo
+    val AmberOrange = Color(0xFFFF9F0A)   // Apple Stand / Goal Orange
+}
+
 enum class AppNavTab(val label: String, val icon: ImageVector) {
-    ACTIVITY("Activity", Icons.Filled.DirectionsWalk),
-    HEART("Vitals", Icons.Filled.Favorite),
-    CALIBRATE("Hands", Icons.Filled.Schedule),
-    OLED("Alerts", Icons.Filled.Notifications),
-    DEVICE("Watch", Icons.Filled.Tune)
+    SUMMARY("Summary", Icons.Filled.Dashboard),
+    FITNESS("Fitness", Icons.Filled.DirectionsRun),
+    HANDS("Hands", Icons.Filled.Schedule),
+    SETTINGS("Watch", Icons.Filled.Watch)
 }
 
 class MainActivity : ComponentActivity() {
@@ -49,7 +73,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestPermissionsIfNeeded()
 
-        // Safely start BLE companion service without aggressive foreground requirements
         try {
             val serviceIntent = Intent(this, LenovoWatchBleService::class.java)
             startService(serviceIntent)
@@ -71,14 +94,23 @@ class MainActivity : ComponentActivity() {
             val findPhoneActive by (service?.findPhoneTrigger?.collectAsState() ?: remember { mutableStateOf(false) })
             val discoveredDevices by (service?.discoveredDevices?.collectAsState() ?: remember { mutableStateOf(emptyList()) })
 
-            var selectedTab by remember { mutableStateOf(AppNavTab.ACTIVITY) }
+            val is24Hour by (service?.is24Hour?.collectAsState() ?: remember { mutableStateOf(true) })
+            val isMetric by (service?.isMetric?.collectAsState() ?: remember { mutableStateOf(true) })
+            val isEnglish by (service?.isEnglish?.collectAsState() ?: remember { mutableStateOf(true) })
+            val sedentaryEnabled by (service?.sedentaryEnabled?.collectAsState() ?: remember { mutableStateOf(false) })
+            val drinkWaterEnabled by (service?.drinkWaterEnabled?.collectAsState() ?: remember { mutableStateOf(false) })
+            val dndEnabled by (service?.dndEnabled?.collectAsState() ?: remember { mutableStateOf(false) })
+            val tiltEnabled by (service?.tiltEnabled?.collectAsState() ?: remember { mutableStateOf(true) })
+            val cameraActive by (service?.cameraModeActive?.collectAsState() ?: remember { mutableStateOf(false) })
+
+            var selectedTab by remember { mutableStateOf(AppNavTab.SUMMARY) }
             var showScanDialog by remember { mutableStateOf(false) }
 
-            WatchXTheme {
+            AppleWatchTheme {
                 Scaffold(
-                    containerColor = Color(0xFF090D16),
+                    containerColor = AppleTheme.Black,
                     bottomBar = {
-                        WatchXBottomBar(
+                        AppleBottomNavBar(
                             currentTab = selectedTab,
                             onTabSelected = { selectedTab = it }
                         )
@@ -92,93 +124,113 @@ class MainActivity : ComponentActivity() {
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(horizontal = 20.dp, vertical = 12.dp)
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
                         ) {
-                            // Top Header with Watch Card
-                            WatchHeaderCard(
+                            // Apple Watch Hero Header Card
+                            AppleHeroWatchHeader(
                                 state = connState,
                                 battery = battery,
                                 firmware = firmware,
-                                onScanClick = {
+                                onPairClick = {
                                     showScanDialog = true
                                     service?.startScan()
                                 },
-                                onSyncClock = {
+                                onSyncTime = {
                                     service?.syncTime()
-                                    Toast.makeText(this@MainActivity, "Atomic clock synchronized!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(this@MainActivity, "Time synchronized", Toast.LENGTH_SHORT).show()
                                 }
                             )
 
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
 
-                            // Main Tab Content
+                            // Main Tab Container
                             Box(modifier = Modifier.weight(1f)) {
                                 when (selectedTab) {
-                                    AppNavTab.ACTIVITY -> ActivityTab(
+                                    AppNavTab.SUMMARY -> AppleSummaryTab(
                                         steps = steps,
                                         stepGoal = stepGoal,
+                                        heartRate = heartRate,
                                         sleep = sleepData,
-                                        onRefresh = {
-                                            service?.querySteps()
-                                            service?.querySleep()
-                                            Toast.makeText(this@MainActivity, "Syncing activity from watch NVRAM...", Toast.LENGTH_SHORT).show()
-                                        }
-                                    )
-                                    AppNavTab.HEART -> HeartRateTab(
-                                        bpm = heartRate,
-                                        isMeasuring = isMeasuringHr,
-                                        onMeasure = {
+                                        battery = battery,
+                                        isMetric = isMetric,
+                                        onMeasureHr = {
                                             if (connState == BleConnectionState.CONNECTED) {
                                                 service?.measureHeartRate()
+                                                Toast.makeText(this@MainActivity, "Sampling optical sensor...", Toast.LENGTH_SHORT).show()
                                             } else {
                                                 Toast.makeText(this@MainActivity, "Connect watch first", Toast.LENGTH_SHORT).show()
                                             }
+                                        },
+                                        onRefreshTelemetry = {
+                                            service?.querySteps()
+                                            service?.querySleep()
+                                            Toast.makeText(this@MainActivity, "Refreshing telemetry...", Toast.LENGTH_SHORT).show()
                                         }
                                     )
-                                    AppNavTab.CALIBRATE -> CalibrateTab(
+                                    AppNavTab.FITNESS -> AppleFitnessDetailTab(
+                                        steps = steps,
+                                        stepGoal = stepGoal,
+                                        heartRate = heartRate,
+                                        isMeasuringHr = isMeasuringHr,
+                                        sleep = sleepData,
+                                        isMetric = isMetric,
+                                        onSetGoal = { service?.setStepGoal(it) },
+                                        onMeasureHr = { service?.measureHeartRate() }
+                                    )
+                                    AppNavTab.HANDS -> AppleCalibrationTab(
                                         onCalibrate = { hour, min ->
                                             if (connState == BleConnectionState.CONNECTED) {
                                                 service?.calibrateHands(hour, min)
-                                                Toast.makeText(this@MainActivity, "Calibrating mechanical steppers...", Toast.LENGTH_SHORT).show()
-                                            } else {
-                                                Toast.makeText(this@MainActivity, "Connect watch first", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    )
-                                    AppNavTab.OLED -> OledNotificationsTab(
-                                        onPush = { title, body, channel ->
-                                            if (connState == BleConnectionState.CONNECTED) {
-                                                service?.pushNotification(title, body, channel)
-                                                Toast.makeText(this@MainActivity, "Sent to OLED Screen!", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(this@MainActivity, "Motors moving hands into place...", Toast.LENGTH_SHORT).show()
                                             } else {
                                                 Toast.makeText(this@MainActivity, "Connect watch first", Toast.LENGTH_SHORT).show()
                                             }
                                         },
-                                        onOpenNotifSettings = {
-                                            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                        onSyncClock = {
+                                            service?.syncTime()
+                                            Toast.makeText(this@MainActivity, "Synchronized to atomic time", Toast.LENGTH_SHORT).show()
                                         }
                                     )
-                                    AppNavTab.DEVICE -> DeviceSettingsTab(
-                                        stepGoal = stepGoal,
-                                        onSetGoal = { service?.setStepGoal(it) },
+                                    AppNavTab.SETTINGS -> AppleWatchSettingsTab(
+                                        is24Hour = is24Hour,
+                                        isMetric = isMetric,
+                                        isEnglish = isEnglish,
+                                        sedentaryEnabled = sedentaryEnabled,
+                                        drinkWaterEnabled = drinkWaterEnabled,
+                                        dndEnabled = dndEnabled,
+                                        tiltEnabled = tiltEnabled,
+                                        cameraActive = cameraActive,
+                                        onToggle24h = { service?.setTimeFormat(it) },
+                                        onToggleMetric = { service?.setUnit(it) },
+                                        onToggleEnglish = { service?.setLanguage(it) },
+                                        onToggleSedentary = { service?.setSedentary(it) },
+                                        onToggleDrinkWater = { service?.setDrinkWater(it) },
                                         onToggleDnd = { service?.setDnd(it) },
                                         onToggleTilt = { service?.setLiftToWake(it) },
+                                        onToggleCamera = { service?.setCameraMode(it) },
                                         onFindWatch = {
                                             service?.findMyWatch()
-                                            Toast.makeText(this@MainActivity, "Signaling watch buzzer...", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(this@MainActivity, "Vibrating watch motor...", Toast.LENGTH_SHORT).show()
                                         },
                                         onSetAlarm = { slot, h, m, mask, en ->
                                             service?.setAlarm(slot, h, m, mask, en)
-                                            Toast.makeText(this@MainActivity, "Alarm synced to watch", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(this@MainActivity, "Alarm written to NVRAM", Toast.LENGTH_SHORT).show()
+                                        },
+                                        onSendTestNotification = { title, body ->
+                                            service?.pushNotification(title, body)
+                                            Toast.makeText(this@MainActivity, "Sent to watch OLED", Toast.LENGTH_SHORT).show()
+                                        },
+                                        onOpenSystemNotifSettings = {
+                                            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                                         }
                                     )
                                 }
                             }
                         }
 
-                        // Scanning Dialog
+                        // Scanning Modal
                         if (showScanDialog) {
-                            ScanDeviceDialog(
+                            AppleScanDialog(
                                 devices = discoveredDevices,
                                 onSelect = { mac ->
                                     service?.connect(mac)
@@ -191,11 +243,9 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        // "Find My Phone" Incoming Watch Signal Alert
+                        // Find My Phone Alert Sheet
                         if (findPhoneActive) {
-                            FindPhoneModal(
-                                onDismiss = { service?.dismissFindPhone() }
-                            )
+                            AppleFindPhoneSheet(onDismiss = { service?.dismissFindPhone() })
                         }
                     }
                 }
@@ -225,352 +275,578 @@ class MainActivity : ComponentActivity() {
 }
 
 /* ========================================================================= */
-/* --- HEADER COMPONENT ---                                                  */
+/* --- APPLE-GRADE HERO WATCH HEADER ---                                     */
 /* ========================================================================= */
 
 @Composable
-fun WatchHeaderCard(
+fun AppleHeroWatchHeader(
     state: BleConnectionState,
     battery: Int,
     firmware: String,
-    onScanClick: () -> Unit,
-    onSyncClock: () -> Unit
+    onPairClick: () -> Unit,
+    onSyncTime: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
+        colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+        border = androidx.compose.foundation.BorderStroke(0.5.dp, AppleTheme.Border)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Column {
-                    Text(
-                        text = "LENOVO WATCH X",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        letterSpacing = 1.sp
-                    )
-                    Text(
-                        text = "Hybrid Smartwatch Companion",
-                        fontSize = 11.sp,
-                        color = Color(0xFF64748B)
+                // Minimal Watch Dial Glyph
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(AppleTheme.InsetDark)
+                        .border(1.dp, AppleTheme.Border, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Watch,
+                        contentDescription = "Watch",
+                        tint = if (state == BleConnectionState.CONNECTED) AppleTheme.TextPrimary else AppleTheme.TextSecondary,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
 
-                // Connection status indicator pill
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            when (state) {
-                                BleConnectionState.CONNECTED -> Color(0xFF064E3B)
-                                BleConnectionState.CONNECTING -> Color(0xFF451A03)
-                                BleConnectionState.SCANNING -> Color(0xFF1E1B4B)
-                                BleConnectionState.DISCONNECTED -> Color(0xFF1E293B)
-                            }
+                Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Lenovo Watch X",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AppleTheme.TextPrimary,
+                            letterSpacing = (-0.3).sp
                         )
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when (state) {
-                                    BleConnectionState.CONNECTED -> Color(0xFF10B981)
-                                    BleConnectionState.CONNECTING -> Color(0xFFF59E0B)
-                                    BleConnectionState.SCANNING -> Color(0xFF818CF8)
-                                    BleConnectionState.DISCONNECTED -> Color(0xFF94A3B8)
-                                }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 2.dp)
+                    ) {
+                        // Connection Pill Indicator
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when (state) {
+                                            BleConnectionState.CONNECTED -> AppleTheme.NeonGreen
+                                            BleConnectionState.CONNECTING -> AppleTheme.AmberOrange
+                                            BleConnectionState.SCANNING -> AppleTheme.ElectricBlue
+                                            BleConnectionState.DISCONNECTED -> AppleTheme.TextSecondary
+                                        }
+                                    )
                             )
-                    )
-                    Text(
-                        text = state.name,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        color = when (state) {
-                            BleConnectionState.CONNECTED -> Color(0xFF6EE7B7)
-                            BleConnectionState.CONNECTING -> Color(0xFFFCD34D)
-                            BleConnectionState.SCANNING -> Color(0xFFA5B4FC)
-                            BleConnectionState.DISCONNECTED -> Color(0xFF94A3B8)
+                            Text(
+                                text = when (state) {
+                                    BleConnectionState.CONNECTED -> "Connected"
+                                    BleConnectionState.CONNECTING -> "Connecting..."
+                                    BleConnectionState.SCANNING -> "Scanning..."
+                                    BleConnectionState.DISCONNECTED -> "Offline"
+                                },
+                                fontSize = 12.sp,
+                                color = AppleTheme.TextSecondary
+                            )
                         }
-                    )
+
+                        Text("•", fontSize = 10.sp, color = AppleTheme.Border)
+
+                        // Battery Pill
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.BatteryFull,
+                                contentDescription = null,
+                                tint = AppleTheme.NeonGreen,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "$battery%",
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = AppleTheme.TextSecondary
+                            )
+                        }
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            // Action Pill Button
+            if (state == BleConnectionState.CONNECTED) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AppleTheme.InsetDark)
+                        .clickable { onSyncTime() }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "Sync Time",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppleTheme.ElectricBlue
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AppleTheme.ElectricBlue)
+                        .clickable { onPairClick() }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "Pair",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
 
-            // Stats and action bar
-            Row(
+/* ========================================================================= */
+/* --- TAB 1: APPLE HEALTH SUMMARY ---                                       */
+/* ========================================================================= */
+
+@Composable
+fun AppleSummaryTab(
+    steps: Int,
+    stepGoal: Int,
+    heartRate: Int,
+    sleep: SleepSession,
+    battery: Int,
+    isMetric: Boolean,
+    onMeasureHr: () -> Unit,
+    onRefreshTelemetry: () -> Unit
+) {
+    val distance = if (isMetric) {
+        "%.2f km".format(steps * 0.00078)
+    } else {
+        "%.2f mi".format(steps * 0.00078 * 0.621371)
+    }
+    val calories = (steps * 0.042).toInt()
+    val progressPercent = ((steps.toFloat() / stepGoal.coerceAtLeast(1)) * 100).toInt()
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // Apple Fitness Activity Ring Hero Card
+        item {
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+                border = androidx.compose.foundation.BorderStroke(0.5.dp, AppleTheme.Border)
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(modifier = Modifier.padding(20.dp)) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.BatteryFull,
-                            contentDescription = "Battery",
-                            tint = Color(0xFF10B981),
-                            modifier = Modifier.size(15.dp)
+                        Text(
+                            text = "ACTIVITY",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.2.sp,
+                            color = AppleTheme.CoralRed
                         )
                         Text(
-                            text = "$battery%",
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = Color(0xFFE2E8F0)
+                            text = "$progressPercent% OF GOAL",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = AppleTheme.TextSecondary
                         )
                     }
 
+                    Spacer(modifier = Modifier.height(18.dp))
+
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(
-                            text = "FW:",
-                            fontSize = 11.sp,
-                            color = Color(0xFF64748B)
-                        )
-                        Text(
-                            text = "v$firmware",
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = Color(0xFFCBD5E1)
-                        )
+                        // Numeric Stats
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Column {
+                                Text(
+                                    text = "%,d".format(steps),
+                                    fontSize = 36.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = (-1).sp,
+                                    color = AppleTheme.TextPrimary
+                                )
+                                Text(
+                                    text = "STEPS TODAY",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 0.8.sp,
+                                    color = AppleTheme.TextSecondary
+                                )
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                                Column {
+                                    Text(
+                                        text = "$calories",
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = AppleTheme.AmberOrange
+                                    )
+                                    Text("KCAL", fontSize = 10.sp, color = AppleTheme.TextSecondary)
+                                }
+                                Column {
+                                    Text(
+                                        text = distance,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = AppleTheme.ElectricBlue
+                                    )
+                                    Text("DISTANCE", fontSize = 10.sp, color = AppleTheme.TextSecondary)
+                                }
+                            }
+                        }
+
+                        // Concentric Activity Ring Canvas
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(110.dp)) {
+                            AppleActivityRingCanvas(
+                                progress = (steps.toFloat() / stepGoal.coerceAtLeast(1)).coerceIn(0f, 1f)
+                            )
+                            Icon(
+                                Icons.Filled.DirectionsWalk,
+                                contentDescription = null,
+                                tint = AppleTheme.CoralRed,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apple Health 2x2 Metric Grid
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Heart Rate Card
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, AppleTheme.Border)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Favorite,
+                                contentDescription = null,
+                                tint = AppleTheme.CardioPink,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "HEART RATE",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppleTheme.CardioPink,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                text = "$heartRate",
+                                fontSize = 28.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppleTheme.TextPrimary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "BPM",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = AppleTheme.TextSecondary,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(AppleTheme.InsetDark)
+                                .clickable { onMeasureHr() }
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Measure", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = AppleTheme.CardioPink)
+                        }
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (state == BleConnectionState.CONNECTED) {
-                        OutlinedButton(
-                            onClick = onSyncClock,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155))
+                // Sleep Metric Card
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, AppleTheme.Border)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Filled.Update, contentDescription = null, modifier = Modifier.size(13.dp), tint = Color(0xFF38BDF8))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Sync Clock", fontSize = 11.sp, color = Color(0xFF38BDF8))
+                            Icon(
+                                Icons.Filled.Bedtime,
+                                contentDescription = null,
+                                tint = AppleTheme.SleepIndigo,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "SLEEP",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppleTheme.SleepIndigo,
+                                letterSpacing = 0.5.sp
+                            )
                         }
+
+                        val hours = sleep.totalMinutes / 60
+                        val mins = sleep.totalMinutes % 60
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                text = "${hours}h ${mins}m",
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppleTheme.TextPrimary
+                            )
+                        }
+
+                        Text(
+                            text = "Score: ${sleep.score}/100",
+                            fontSize = 11.sp,
+                            color = AppleTheme.TextSecondary
+                        )
+                    }
+                }
+            }
+        }
+
+        // Quick Sync Strip
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(AppleTheme.InsetDark)
+                    .clickable { onRefreshTelemetry() }
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(Icons.Filled.Sync, contentDescription = null, tint = AppleTheme.ElectricBlue, modifier = Modifier.size(15.dp))
+                    Text("Refresh Sensor Data", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = AppleTheme.ElectricBlue)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AppleActivityRingCanvas(progress: Float) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val strokeWidth = 10.dp.toPx()
+        // Background track
+        drawCircle(
+            color = Color(0xFF2C2C2E),
+            style = Stroke(width = strokeWidth)
+        )
+        // Active progress arc
+        drawArc(
+            color = AppleTheme.CoralRed,
+            startAngle = -90f,
+            sweepAngle = progress * 360f,
+            useCenter = false,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+    }
+}
+
+/* ========================================================================= */
+/* --- TAB 2: FITNESS & HEALTH DETAIL ---                                    */
+/* ========================================================================= */
+
+@Composable
+fun AppleFitnessDetailTab(
+    steps: Int,
+    stepGoal: Int,
+    heartRate: Int,
+    isMeasuringHr: Boolean,
+    sleep: SleepSession,
+    isMetric: Boolean,
+    onSetGoal: (Int) -> Unit,
+    onMeasureHr: () -> Unit
+) {
+    var goalValue by remember { mutableStateOf(stepGoal.toFloat()) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Step Goal Adjuster
+        item {
+            AppleGroupCard(title = "Daily Target") {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Daily Step Goal", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = AppleTheme.TextPrimary)
+                        Text(
+                            text = "%,d".format(goalValue.toInt()),
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = AppleTheme.CoralRed
+                        )
+                    }
+
+                    Slider(
+                        value = goalValue,
+                        onValueChange = { goalValue = it },
+                        onValueChangeFinished = { onSetGoal(goalValue.toInt()) },
+                        valueRange = 3000f..25000f,
+                        steps = 21,
+                        colors = SliderDefaults.colors(
+                            thumbColor = AppleTheme.CoralRed,
+                            activeTrackColor = AppleTheme.CoralRed,
+                            inactiveTrackColor = AppleTheme.InsetDark
+                        )
+                    )
+
+                    Text(
+                        text = "Synced directly to watch pedometer counter",
+                        fontSize = 11.sp,
+                        color = AppleTheme.TextSecondary
+                    )
+                }
+            }
+        }
+
+        // Live Heart Rate Monitor
+        item {
+            AppleGroupCard(title = "Cardio Health") {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Optical PPG Sensor", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = AppleTheme.TextPrimary)
+                            Text("Measures pulse via green photoplethysmography", fontSize = 11.sp, color = AppleTheme.TextSecondary)
+                        }
+
+                        Text(
+                            text = "$heartRate BPM",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = AppleTheme.CardioPink
+                        )
                     }
 
                     Button(
-                        onClick = onScanClick,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                        onClick = onMeasureHr,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.CardioPink)
                     ) {
-                        Icon(Icons.Filled.Bluetooth, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
-                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (state == BleConnectionState.CONNECTED) "Change" else "Pair Watch",
-                            fontSize = 11.sp,
+                            text = if (isMeasuringHr) "Sampling..." else "Start Heart Rate Reading",
+                            fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
                     }
                 }
             }
         }
-    }
-}
 
-/* ========================================================================= */
-/* --- TAB 1: ACTIVITY (PEDOMETER & SLEEP) ---                               */
-/* ========================================================================= */
-
-@Composable
-fun ActivityTab(
-    steps: Int,
-    stepGoal: Int,
-    sleep: SleepSession,
-    onRefresh: () -> Unit
-) {
-    val progress = (steps.toFloat() / stepGoal.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
-    val calories = (steps * 0.04f).toInt()
-    val distanceKm = String.format("%.2f", steps * 0.00075f)
-
-    LazyColumn(
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        // Daily Steps Card
+        // Sleep Breakdown Bars
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFFF59E0B).copy(alpha = 0.15f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Filled.DirectionsWalk, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
-                            }
-                            Text("Pedometer", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                        }
+            AppleGroupCard(title = "Sleep Architecture") {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    val total = sleep.totalMinutes.coerceAtLeast(1)
+                    val deepPct = (sleep.deepMinutes * 100 / total)
+                    val lightPct = (sleep.lightMinutes * 100 / total)
+                    val awakePct = (sleep.awakeMinutes * 100 / total)
 
-                        IconButton(onClick = onRefresh, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color(0xFF94A3B8), modifier = Modifier.size(16.dp))
-                        }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(14.dp)
+                            .clip(RoundedCornerShape(7.dp))
+                    ) {
+                        Box(modifier = Modifier.weight(deepPct.coerceAtLeast(1).toFloat()).fillMaxHeight().background(AppleTheme.SleepIndigo))
+                        Box(modifier = Modifier.weight(lightPct.coerceAtLeast(1).toFloat()).fillMaxHeight().background(Color(0xFF818CF8)))
+                        Box(modifier = Modifier.weight(awakePct.coerceAtLeast(1).toFloat()).fillMaxHeight().background(Color(0xFF334155)))
                     }
 
-                    Spacer(modifier = Modifier.height(20.dp))
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.Bottom
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text(
-                                text = "%,d".format(steps),
-                                fontSize = 38.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color.White
-                            )
-                            val goalFormatted = String.format("%,d", stepGoal)
-                            val progressPct = (progress * 100).toInt()
-                            Text(
-                                text = "Goal: $goalFormatted steps ($progressPct%)",
-                                fontSize = 12.sp,
-                                color = Color(0xFF94A3B8)
-                            )
+                            Text("Deep Sleep", fontSize = 11.sp, color = AppleTheme.TextSecondary)
+                            Text("${sleep.deepMinutes / 60}h ${sleep.deepMinutes % 60}m", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = AppleTheme.SleepIndigo)
                         }
-
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(text = "$calories kcal", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFFB923C))
-                            Text(text = "$distanceKm km", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF38BDF8))
+                        Column {
+                            Text("Light Sleep", fontSize = 11.sp, color = AppleTheme.TextSecondary)
+                            Text("${sleep.lightMinutes / 60}h ${sleep.lightMinutes % 60}m", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF818CF8))
                         }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    LinearProgressIndicator(
-                        progress = progress,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(RoundedCornerShape(4.dp)),
-                        color = Color(0xFFF59E0B),
-                        trackColor = Color(0xFF1E293B)
-                    )
-                }
-            }
-        }
-
-        // Sleep Tracking Card
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF818CF8).copy(alpha = 0.15f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Filled.Bedtime, contentDescription = null, tint = Color(0xFF818CF8), modifier = Modifier.size(18.dp))
-                            }
-                            Text("Sleep Quality", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                        Column {
+                            Text("Awake", fontSize = 11.sp, color = AppleTheme.TextSecondary)
+                            Text("${sleep.awakeMinutes}m", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = AppleTheme.TextPrimary)
                         }
-
-                        // Sleep score badge
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF4338CA).copy(alpha = 0.4f))
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = "Score: ${sleep.score}/100",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFA5B4FC)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    val totalH = sleep.totalMinutes / 60
-                    val totalM = sleep.totalMinutes % 60
-                    Text(
-                        text = "${totalH}h ${totalM}m",
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color.White
-                    )
-                    Text("Total Rest Duration", fontSize = 12.sp, color = Color(0xFF94A3B8))
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Sleep phases visual breakdown bar
-                    val deepRatio = sleep.deepMinutes.toFloat() / sleep.totalMinutes.coerceAtLeast(1)
-                    val lightRatio = sleep.lightMinutes.toFloat() / sleep.totalMinutes.coerceAtLeast(1)
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(10.dp)
-                            .clip(RoundedCornerShape(5.dp))
-                    ) {
-                        Box(modifier = Modifier.weight(deepRatio.coerceAtLeast(0.05f)).fillMaxHeight().background(Color(0xFF4F46E5)))
-                        Box(modifier = Modifier.weight(lightRatio.coerceAtLeast(0.05f)).fillMaxHeight().background(Color(0xFF818CF8)))
-                        Box(modifier = Modifier.weight(0.1f).fillMaxHeight().background(Color(0xFF334155)))
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        SleepPhaseItem("Deep Sleep", "${sleep.deepMinutes / 60}h ${sleep.deepMinutes % 60}m", Color(0xFF4F46E5))
-                        SleepPhaseItem("Light Sleep", "${sleep.lightMinutes / 60}h ${sleep.lightMinutes % 60}m", Color(0xFF818CF8))
-                        SleepPhaseItem("Awake", "${sleep.awakeMinutes}m", Color(0xFF64748B))
                     }
                 }
             }
@@ -578,423 +854,108 @@ fun ActivityTab(
     }
 }
 
-@Composable
-fun SleepPhaseItem(label: String, value: String, color: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(color))
-        Column {
-            Text(label, fontSize = 10.sp, color = Color(0xFF94A3B8))
-            Text(value, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        }
-    }
-}
-
 /* ========================================================================= */
-/* --- TAB 2: VITALS (HEART RATE PPG) ---                                    */
+/* --- TAB 3: PHYSICAL HANDS CALIBRATION ---                                 */
 /* ========================================================================= */
 
 @Composable
-fun HeartRateTab(
-    bpm: Int,
-    isMeasuring: Boolean,
-    onMeasure: () -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Optical Heart Rate", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                    Text("PPG Sensor", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFE11D48))
-                }
-
-                Spacer(modifier = Modifier.height(28.dp))
-
-                // Pulsing Heart Centerpiece
-                Box(
-                    modifier = Modifier
-                        .size(130.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (isMeasuring) Color(0xFFE11D48).copy(alpha = 0.2f)
-                            else Color(0xFF1E293B)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Favorite,
-                        contentDescription = "Heart",
-                        tint = if (isMeasuring) Color(0xFFF43F5E) else Color(0xFFE11D48),
-                        modifier = Modifier.size(64.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Row(
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = if (isMeasuring) "--" else bpm.toString(),
-                        fontSize = 48.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color.White
-                    )
-                    Text(
-                        text = "BPM",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF94A3B8),
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                }
-
-                Text(
-                    text = if (isMeasuring) "Measuring optical blood pulse..." else "Normal resting pulse",
-                    fontSize = 12.sp,
-                    color = Color(0xFF94A3B8)
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Button(
-                    onClick = onMeasure,
-                    enabled = !isMeasuring,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE11D48))
-                ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(if (isMeasuring) "Sampling Sensor..." else "Trigger Measurement", fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-
-        // Vitals summary card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp),
-                horizontalArrangement = Arrangement.SpaceAround
-            ) {
-                VitalsStatItem("Min BPM", "58", Color(0xFF38BDF8))
-                VitalsStatItem("Avg BPM", "$bpm", Color(0xFF10B981))
-                VitalsStatItem("Max BPM", "118", Color(0xFFF43F5E))
-            }
-        }
-    }
-}
-
-@Composable
-fun VitalsStatItem(label: String, value: String, color: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, fontSize = 11.sp, color = Color(0xFF94A3B8))
-        Text(value, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace, color = color)
-    }
-}
-
-/* ========================================================================= */
-/* --- TAB 3: CALIBRATE (MECHANICAL HANDS) ---                               */
-/* ========================================================================= */
-
-@Composable
-fun CalibrateTab(
-    onCalibrate: (Int, Int) -> Unit
+fun AppleCalibrationTab(
+    onCalibrate: (Int, Int) -> Unit,
+    onSyncClock: () -> Unit
 ) {
     var hour by remember { mutableStateOf(12) }
     var minute by remember { mutableStateOf(0) }
 
     LazyColumn(
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Mechanical Hand Alignment", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                        TextButton(onClick = { hour = 12; minute = 0 }) {
-                            Text("Reset 12:00", fontSize = 11.sp, color = Color(0xFF38BDF8))
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
+            AppleGroupCard(title = "Mechanical Alignment") {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
                     Text(
-                        text = "1. Look at where your physical watch hands are pointing.\n2. Set the dials below to match that exact position.\n3. Tap 'Align Hands' and the watch steppers will rotate to current atomic time.",
-                        fontSize = 11.sp,
-                        color = Color(0xFF94A3B8),
-                        lineHeight = 16.sp
+                        text = "Align Watch Needles",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AppleTheme.TextPrimary
+                    )
+                    Text(
+                        text = "Look at where your physical mechanical hands are pointing on the watch face. Adjust below to match their current positions, then calibrate.",
+                        fontSize = 12.sp,
+                        color = AppleTheme.TextSecondary,
+                        textAlign = TextAlign.Center
                     )
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    // Dial Display
+                    Text(
+                        text = "%02d : %02d".format(hour, minute),
+                        fontSize = 44.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        color = AppleTheme.ElectricBlue
+                    )
 
-                    // Big Current Set Time Display
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF090D16))
-                            .padding(vertical = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "%02d:%02d".format(hour, minute),
-                            fontSize = 44.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFamily = FontFamily.Monospace,
-                            color = Color(0xFF38BDF8)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    // Hour Stepper Buttons
-                    Text("Hour Hand:", fontSize = 12.sp, color = Color(0xFF94A3B8))
-                    Spacer(modifier = Modifier.height(6.dp))
+                    // Stepper Buttons
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
                         Button(
-                            onClick = { hour = if (hour <= 1) 12 else hour - 1 },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                        ) {
-                            Text("-1h", color = Color.White)
-                        }
-                        Button(
-                            onClick = { hour = if (hour >= 12) 1 else hour + 1 },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                        ) {
-                            Text("+1h", color = Color.White)
-                        }
-                    }
+                            onClick = { hour = (hour + 11) % 12 },
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
+                            shape = RoundedCornerShape(10.dp)
+                        ) { Text("-1h", color = Color.White) }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                        Button(
+                            onClick = { hour = (hour + 1) % 12 },
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
+                            shape = RoundedCornerShape(10.dp)
+                        ) { Text("+1h", color = Color.White) }
 
-                    // Minute Stepper Buttons
-                    Text("Minute Hand:", fontSize = 12.sp, color = Color(0xFF94A3B8))
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
                         Button(
-                            onClick = { minute = (minute - 5 + 60) % 60 },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(0.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                        ) { Text("-5m", fontSize = 11.sp, color = Color.White) }
-                        Button(
-                            onClick = { minute = (minute - 1 + 60) % 60 },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(0.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                        ) { Text("-1m", fontSize = 11.sp, color = Color.White) }
-                        Button(
-                            onClick = { minute = (minute + 1) % 60 },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(0.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                        ) { Text("+1m", fontSize = 11.sp, color = Color.White) }
+                            onClick = { minute = (minute + 55) % 60 },
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
+                            shape = RoundedCornerShape(10.dp)
+                        ) { Text("-5m", color = Color.White) }
+
                         Button(
                             onClick = { minute = (minute + 5) % 60 },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(0.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                        ) { Text("+5m", fontSize = 11.sp, color = Color.White) }
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
+                            shape = RoundedCornerShape(10.dp)
+                        ) { Text("+5m", color = Color.White) }
                     }
-
-                    Spacer(modifier = Modifier.height(24.dp))
 
                     Button(
-                        onClick = { onCalibrate(if (hour == 12) 0 else hour, minute) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-                    ) {
-                        Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Align Hands to Atomic Time", fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/* ========================================================================= */
-/* --- TAB 4: OLED NOTIFICATIONS ---                                         */
-/* ========================================================================= */
-
-@Composable
-fun OledNotificationsTab(
-    onPush: (String, String, Int) -> Unit,
-    onOpenNotifSettings: () -> Unit
-) {
-    var title by remember { mutableStateOf("WhatsApp") }
-    var message by remember { mutableStateOf("See you at 6:30 PM!") }
-    var channel by remember { mutableStateOf(7) }
-
-    LazyColumn(
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        // OLED preview card
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Text("Watch OLED Screen Preview", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                    Text("96×32 Pixel Monochromatic Matrix", fontSize = 11.sp, color = Color(0xFF64748B))
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // Pixel OLED Box
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(80.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color.Black)
-                            .border(1.5.dp, Color(0xFF10B981).copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                            .padding(12.dp)
-                    ) {
-                        Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
-                            Text(
-                                text = title.uppercase(),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color(0xFF10B981)
-                            )
-                            Text(
-                                text = message,
-                                fontSize = 13.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color(0xFF6EE7B7),
-                                maxLines = 1
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    OutlinedTextField(
-                        value = title,
-                        onValueChange = { title = it.take(14) },
-                        label = { Text("Sender Title (Max 14 chars)", fontSize = 12.sp) },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF10B981),
-                            unfocusedBorderColor = Color(0xFF334155),
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White
-                        )
-                    )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    OutlinedTextField(
-                        value = message,
-                        onValueChange = { message = it.take(64) },
-                        label = { Text("Message Body (Max 64 chars)", fontSize = 12.sp) },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF10B981),
-                            unfocusedBorderColor = Color(0xFF334155),
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White
-                        )
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = { onPush(title, message, channel) },
+                        onClick = { onCalibrate(hour, minute) },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                        colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.ElectricBlue)
                     ) {
-                        Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Push Alert to Watch OLED", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Text("Calibrate Mechanical Motors", fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 }
             }
         }
 
-        // Notification listener access prompt
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Text("Auto-Forward Phone Notifications", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                    Spacer(modifier = Modifier.height(4.dp))
+            AppleGroupCard(title = "Atomic Clock") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Allow Chronos X to listen to incoming Android notifications (WhatsApp, Calls, SMS) and automatically transmit them to your watch vibration motor and OLED display.",
-                        fontSize = 11.sp,
-                        color = Color(0xFF94A3B8)
+                        text = "Once needles are aligned, synchronize with phone network time.",
+                        fontSize = 12.sp,
+                        color = AppleTheme.TextSecondary
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedButton(
-                        onClick = onOpenNotifSettings,
+                    Button(
+                        onClick = onSyncClock,
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark)
                     ) {
-                        Text("Grant Notification Access", color = Color(0xFF38BDF8), fontSize = 12.sp)
+                        Text("Sync to Real Time", color = AppleTheme.TextPrimary)
                     }
                 }
             }
@@ -1003,58 +964,200 @@ fun OledNotificationsTab(
 }
 
 /* ========================================================================= */
-/* --- TAB 5: DEVICE & ALARMS ---                                            */
+/* --- TAB 4: APPLE-GRADE WATCH SETTINGS & CUSTOMIZATION ---                 */
 /* ========================================================================= */
 
 @Composable
-fun DeviceSettingsTab(
-    stepGoal: Int,
-    onSetGoal: (Int) -> Unit,
+fun AppleWatchSettingsTab(
+    is24Hour: Boolean,
+    isMetric: Boolean,
+    isEnglish: Boolean,
+    sedentaryEnabled: Boolean,
+    drinkWaterEnabled: Boolean,
+    dndEnabled: Boolean,
+    tiltEnabled: Boolean,
+    cameraActive: Boolean,
+    onToggle24h: (Boolean) -> Unit,
+    onToggleMetric: (Boolean) -> Unit,
+    onToggleEnglish: (Boolean) -> Unit,
+    onToggleSedentary: (Boolean) -> Unit,
+    onToggleDrinkWater: (Boolean) -> Unit,
     onToggleDnd: (Boolean) -> Unit,
     onToggleTilt: (Boolean) -> Unit,
+    onToggleCamera: (Boolean) -> Unit,
     onFindWatch: () -> Unit,
-    onSetAlarm: (Int, Int, Int, Int, Boolean) -> Unit
+    onSetAlarm: (slot: Int, hour: Int, min: Int, mask: Int, enabled: Boolean) -> Unit,
+    onSendTestNotification: (title: String, body: String) -> Unit,
+    onOpenSystemNotifSettings: () -> Unit
 ) {
-    var dndEnabled by remember { mutableStateOf(false) }
-    var tiltEnabled by remember { mutableStateOf(true) }
-    var goalSlider by remember { mutableStateOf(stepGoal.toFloat()) }
-
     var alarmHour by remember { mutableStateOf(7) }
-    var alarmMin by remember { mutableStateOf(0) }
+    var alarmMin by remember { mutableStateOf(30) }
     var alarmEnabled by remember { mutableStateOf(true) }
 
+    var testTitle by remember { mutableStateOf("Test Alert") }
+    var testBody by remember { mutableStateOf("Hello Watch X!") }
+
     LazyColumn(
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Find Watch
+        // PREFERENCES & LOCALIZATION
         item {
-            Button(
-                onClick = onFindWatch,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1))
-            ) {
-                Icon(Icons.Filled.Vibration, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Find My Watch (Vibrate)", fontWeight = FontWeight.Bold)
+            AppleGroupCard(title = "Display & Units") {
+                // 12h / 24h Time Format
+                AppleSettingRow(
+                    icon = Icons.Filled.AccessTime,
+                    iconTint = Color.White,
+                    iconBackground = AppleTheme.ElectricBlue,
+                    title = "Time Format",
+                    subtitle = if (is24Hour) "24-Hour (14:00)" else "12-Hour (2:00 PM)",
+                    trailing = {
+                        AppleSegmentedPicker(
+                            options = listOf("12h", "24h"),
+                            selectedIndex = if (is24Hour) 1 else 0,
+                            onSelect = { onToggle24h(it == 1) }
+                        )
+                    }
+                )
+
+                Divider(color = AppleTheme.Divider, thickness = 0.5.dp)
+
+                // Metric vs Imperial
+                AppleSettingRow(
+                    icon = Icons.Filled.Straighten,
+                    iconTint = Color.White,
+                    iconBackground = AppleTheme.NeonGreen,
+                    title = "Distance Units",
+                    subtitle = if (isMetric) "Kilometers (km)" else "Miles (mi)",
+                    trailing = {
+                        AppleSegmentedPicker(
+                            options = listOf("km", "mi"),
+                            selectedIndex = if (isMetric) 0 else 1,
+                            onSelect = { onToggleMetric(it == 0) }
+                        )
+                    }
+                )
+
+                Divider(color = AppleTheme.Divider, thickness = 0.5.dp)
+
+                // Language
+                AppleSettingRow(
+                    icon = Icons.Filled.Language,
+                    iconTint = Color.White,
+                    iconBackground = AppleTheme.SleepIndigo,
+                    title = "Watch Language",
+                    subtitle = if (isEnglish) "English" else "中文 (Chinese)",
+                    trailing = {
+                        AppleSegmentedPicker(
+                            options = listOf("EN", "中文"),
+                            selectedIndex = if (isEnglish) 0 else 1,
+                            onSelect = { onToggleEnglish(it == 0) }
+                        )
+                    }
+                )
             }
         }
 
-        // Hardware Alarms
+        // HEALTH REMINDERS
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Text("Hardware Alarm #1", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                    Text("Stored in watch NVRAM (Vibrates without phone)", fontSize = 11.sp, color = Color(0xFF64748B))
+            AppleGroupCard(title = "Health Reminders") {
+                // Sedentary Alert
+                AppleSettingRow(
+                    icon = Icons.Filled.AccessibilityNew,
+                    iconTint = Color.White,
+                    iconBackground = AppleTheme.AmberOrange,
+                    title = "Sedentary Reminder",
+                    subtitle = "Vibrates if inactive for over 60 mins",
+                    trailing = {
+                        Switch(
+                            checked = sedentaryEnabled,
+                            onCheckedChange = onToggleSedentary,
+                            colors = SwitchDefaults.colors(checkedTrackColor = AppleTheme.NeonGreen)
+                        )
+                    }
+                )
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                Divider(color = AppleTheme.Divider, thickness = 0.5.dp)
 
+                // Hydration Alert
+                AppleSettingRow(
+                    icon = Icons.Filled.LocalDrink,
+                    iconTint = Color.White,
+                    iconBackground = AppleTheme.ElectricBlue,
+                    title = "Drink Water Alert",
+                    subtitle = "Reminds to hydrate every 2 hours",
+                    trailing = {
+                        Switch(
+                            checked = drinkWaterEnabled,
+                            onCheckedChange = onToggleDrinkWater,
+                            colors = SwitchDefaults.colors(checkedTrackColor = AppleTheme.NeonGreen)
+                        )
+                    }
+                )
+            }
+        }
+
+        // HARDWARE CONTROLS & GESTURES
+        item {
+            AppleGroupCard(title = "Hardware Gestures") {
+                // Tilt to Wake
+                AppleSettingRow(
+                    icon = Icons.Filled.WbIncandescent,
+                    iconTint = Color.White,
+                    iconBackground = Color(0xFFFFD60A),
+                    title = "Lift Wrist to Wake",
+                    subtitle = "Lights up OLED display on wrist raise",
+                    trailing = {
+                        Switch(
+                            checked = tiltEnabled,
+                            onCheckedChange = onToggleTilt,
+                            colors = SwitchDefaults.colors(checkedTrackColor = AppleTheme.NeonGreen)
+                        )
+                    }
+                )
+
+                Divider(color = AppleTheme.Divider, thickness = 0.5.dp)
+
+                // Do Not Disturb
+                AppleSettingRow(
+                    icon = Icons.Filled.DoNotDisturbOn,
+                    iconTint = Color.White,
+                    iconBackground = Color(0xFF64748B),
+                    title = "Do Not Disturb",
+                    subtitle = "Silences all OLED vibration alerts",
+                    trailing = {
+                        Switch(
+                            checked = dndEnabled,
+                            onCheckedChange = onToggleDnd,
+                            colors = SwitchDefaults.colors(checkedTrackColor = AppleTheme.NeonGreen)
+                        )
+                    }
+                )
+
+                Divider(color = AppleTheme.Divider, thickness = 0.5.dp)
+
+                // Remote Camera Shutter
+                AppleSettingRow(
+                    icon = Icons.Filled.CameraAlt,
+                    iconTint = Color.White,
+                    iconBackground = AppleTheme.CardioPink,
+                    title = "Camera Shutter Mode",
+                    subtitle = "Shake watch to trigger phone camera",
+                    trailing = {
+                        Switch(
+                            checked = cameraActive,
+                            onCheckedChange = onToggleCamera,
+                            colors = SwitchDefaults.colors(checkedTrackColor = AppleTheme.NeonGreen)
+                        )
+                    }
+                )
+            }
+        }
+
+        // HARDWARE VIBRATION ALARM #1
+        item {
+            AppleGroupCard(title = "Hardware Alarm (NVRAM)") {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1065,28 +1168,26 @@ fun DeviceSettingsTab(
                             fontSize = 32.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace,
-                            color = Color.White
+                            color = AppleTheme.TextPrimary
                         )
-
                         Switch(
                             checked = alarmEnabled,
-                            onCheckedChange = { alarmEnabled = it }
+                            onCheckedChange = { alarmEnabled = it },
+                            colors = SwitchDefaults.colors(checkedTrackColor = AppleTheme.NeonGreen)
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(10.dp))
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = { alarmHour = (alarmHour + 1) % 24 },
                             shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark)
                         ) { Text("+1h", fontSize = 11.sp, color = Color.White) }
 
                         Button(
                             onClick = { alarmMin = (alarmMin + 5) % 60 },
                             shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark)
                         ) { Text("+5m", fontSize = 11.sp, color = Color.White) }
 
                         Spacer(modifier = Modifier.weight(1f))
@@ -1094,79 +1195,80 @@ fun DeviceSettingsTab(
                         Button(
                             onClick = { onSetAlarm(1, alarmHour, alarmMin, 0xFE, alarmEnabled) },
                             shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.ElectricBlue)
                         ) { Text("Save Alarm", fontSize = 11.sp, color = Color.White) }
                     }
                 }
             }
         }
 
-        // Hardware Preferences
+        // NOTIFICATIONS & FIND WATCH
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B))
-            ) {
-                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("Watch Hardware Controls", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-
-                    // Tilt to wake
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Tilt-to-Wake Display", fontSize = 13.sp, color = Color.White)
-                            Text("Light up OLED on wrist raise", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                        }
-                        Switch(
-                            checked = tiltEnabled,
-                            onCheckedChange = {
-                                tiltEnabled = it
-                                onToggleTilt(it)
-                            }
-                        )
+            AppleGroupCard(title = "Alerts & Find Watch") {
+                AppleSettingRow(
+                    icon = Icons.Filled.NotificationsActive,
+                    iconTint = Color.White,
+                    iconBackground = AppleTheme.ElectricBlue,
+                    title = "System Notification Listener",
+                    subtitle = "Forward WhatsApp, Calls, SMS to watch",
+                    trailing = {
+                        Button(
+                            onClick = onOpenSystemNotifSettings,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark)
+                        ) { Text("Grant", fontSize = 11.sp, color = AppleTheme.ElectricBlue) }
                     }
+                )
 
-                    Divider(color = Color(0xFF1E293B))
+                Divider(color = AppleTheme.Divider, thickness = 0.5.dp)
 
-                    // DND
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Do Not Disturb", fontSize = 13.sp, color = Color.White)
-                            Text("Mute vibrations & OLED popups", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                        }
-                        Switch(
-                            checked = dndEnabled,
-                            onCheckedChange = {
-                                dndEnabled = it
-                                onToggleDnd(it)
-                            }
-                        )
+                AppleSettingRow(
+                    icon = Icons.Filled.Vibration,
+                    iconTint = Color.White,
+                    iconBackground = AppleTheme.AmberOrange,
+                    title = "Find My Watch",
+                    subtitle = "Vibrates watch motor continuously",
+                    trailing = {
+                        Button(
+                            onClick = onFindWatch,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.AmberOrange)
+                        ) { Text("Buzzer", fontSize = 11.sp, color = Color.White) }
                     }
+                )
 
-                    Divider(color = Color(0xFF1E293B))
+                Divider(color = AppleTheme.Divider, thickness = 0.5.dp)
 
-                    // Step goal slider
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Target Step Goal", fontSize = 13.sp, color = Color.White)
-                            Text("${goalSlider.toInt()} steps", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
-                        }
-                        Slider(
-                            value = goalSlider,
-                            onValueChange = { goalSlider = it },
-                            onValueChangeFinished = { onSetGoal(goalSlider.toInt()) },
-                            valueRange = 3000f..25000f,
-                            steps = 21
+                // OLED Test Sender
+                Column(modifier = Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("OLED Screen Previewer", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = AppleTheme.TextPrimary)
+                    OutlinedTextField(
+                        value = testTitle,
+                        onValueChange = { testTitle = it },
+                        label = { Text("Title") },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AppleTheme.ElectricBlue,
+                            unfocusedBorderColor = AppleTheme.Border
                         )
+                    )
+                    OutlinedTextField(
+                        value = testBody,
+                        onValueChange = { testBody = it },
+                        label = { Text("Message Body") },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AppleTheme.ElectricBlue,
+                            unfocusedBorderColor = AppleTheme.Border
+                        )
+                    )
+                    Button(
+                        onClick = { onSendTestNotification(testTitle, testBody) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.ElectricBlue)
+                    ) {
+                        Text("Send to OLED Display", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1175,63 +1277,172 @@ fun DeviceSettingsTab(
 }
 
 /* ========================================================================= */
-/* --- BOTTOM NAVIGATION BAR ---                                             */
+/* --- REUSABLE APPLE UI COMPONENTS ---                                      */
 /* ========================================================================= */
 
 @Composable
-fun WatchXBottomBar(
+fun AppleGroupCard(
+    title: String? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        if (title != null) {
+            Text(
+                text = title.uppercase(),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.1.sp,
+                color = AppleTheme.TextSecondary,
+                modifier = Modifier.padding(start = 14.dp, bottom = 6.dp)
+            )
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+            border = androidx.compose.foundation.BorderStroke(0.5.dp, AppleTheme.Border)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                content = content
+            )
+        }
+    }
+}
+
+@Composable
+fun AppleSettingRow(
+    icon: ImageVector,
+    iconTint: Color,
+    iconBackground: Color,
+    title: String,
+    subtitle: String? = null,
+    trailing: @Composable () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(iconBackground),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(18.dp))
+            }
+            Column {
+                Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = AppleTheme.TextPrimary)
+                if (subtitle != null) {
+                    Text(subtitle, fontSize = 11.sp, color = AppleTheme.TextSecondary)
+                }
+            }
+        }
+        trailing()
+    }
+}
+
+@Composable
+fun AppleSegmentedPicker(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(AppleTheme.InsetDark)
+            .padding(2.dp)
+    ) {
+        options.forEachIndexed { index, label ->
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (index == selectedIndex) Color(0xFF3A3A3C) else Color.Transparent)
+                    .clickable { onSelect(index) }
+                    .padding(horizontal = 12.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    text = label,
+                    fontSize = 12.sp,
+                    fontWeight = if (index == selectedIndex) FontWeight.Bold else FontWeight.Normal,
+                    color = if (index == selectedIndex) AppleTheme.TextPrimary else AppleTheme.TextSecondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AppleBottomNavBar(
     currentTab: AppNavTab,
     onTabSelected: (AppNavTab) -> Unit
 ) {
     NavigationBar(
-        containerColor = Color(0xFF0B101D),
-        contentColor = Color.White,
-        tonalElevation = 8.dp,
-        modifier = Modifier.border(1.dp, Color(0xFF1E293B), RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+        containerColor = AppleTheme.CardDark,
+        tonalElevation = 0.dp,
+        modifier = Modifier.border(
+            width = 0.5.dp,
+            color = AppleTheme.Border,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+        )
     ) {
         AppNavTab.values().forEach { tab ->
+            val selected = currentTab == tab
             NavigationBarItem(
-                selected = currentTab == tab,
+                selected = selected,
                 onClick = { onTabSelected(tab) },
-                icon = { Icon(tab.icon, contentDescription = tab.label, modifier = Modifier.size(20.dp)) },
-                label = { Text(tab.label, fontSize = 10.sp, fontWeight = if (currentTab == tab) FontWeight.Bold else FontWeight.Normal) },
+                icon = {
+                    Icon(
+                        tab.icon,
+                        contentDescription = tab.label,
+                        tint = if (selected) AppleTheme.ElectricBlue else AppleTheme.TextSecondary
+                    )
+                },
+                label = {
+                    Text(
+                        tab.label,
+                        fontSize = 10.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (selected) AppleTheme.ElectricBlue else AppleTheme.TextSecondary
+                    )
+                },
                 colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = Color(0xFF00F0FF),
-                    selectedTextColor = Color(0xFF00F0FF),
-                    unselectedIconColor = Color(0xFF64748B),
-                    unselectedTextColor = Color(0xFF64748B),
-                    indicatorColor = Color(0xFF00F0FF).copy(alpha = 0.15f)
+                    indicatorColor = AppleTheme.ElectricBlue.copy(alpha = 0.15f)
                 )
             )
         }
     }
 }
 
-/* ========================================================================= */
-/* --- SCAN DEVICES DIALOG ---                                               */
-/* ========================================================================= */
-
 @Composable
-fun ScanDeviceDialog(
+fun AppleScanDialog(
     devices: List<Pair<String, String>>,
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF131B2E),
-        title = { Text("Discovered BLE Devices", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+        containerColor = AppleTheme.CardDark,
+        title = { Text("Nearby Devices", color = AppleTheme.TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold) },
         text = {
             if (devices.isEmpty()) {
                 Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 24.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CircularProgressIndicator(color = Color(0xFF00F0FF), modifier = Modifier.size(28.dp))
-                        Text("Scanning for nearby Lenovo Watch X...", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        CircularProgressIndicator(color = AppleTheme.ElectricBlue, modifier = Modifier.size(28.dp))
+                        Text("Searching for Lenovo Watch...", fontSize = 12.sp, color = AppleTheme.TextSecondary)
                     }
                 }
             } else {
@@ -1240,18 +1451,18 @@ fun ScanDeviceDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF090D16))
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(AppleTheme.InsetDark)
                                 .clickable { onSelect(mac) }
-                                .padding(12.dp),
+                                .padding(14.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column {
-                                Text(name, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 13.sp)
-                                Text(mac, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Color(0xFF64748B))
+                                Text(name, fontWeight = FontWeight.Bold, color = AppleTheme.TextPrimary, fontSize = 14.sp)
+                                Text(mac, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = AppleTheme.TextSecondary)
                             }
-                            Text("Connect", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00F0FF))
+                            Text("Connect", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AppleTheme.ElectricBlue)
                         }
                     }
                 }
@@ -1259,26 +1470,22 @@ fun ScanDeviceDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", color = Color(0xFF94A3B8))
+                Text("Cancel", color = AppleTheme.TextSecondary)
             }
         }
     )
 }
 
-/* ========================================================================= */
-/* --- FIND PHONE INCOMING MODAL ---                                         */
-/* ========================================================================= */
-
 @Composable
-fun FindPhoneModal(onDismiss: () -> Unit) {
+fun AppleFindPhoneSheet(onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF7F1D1D),
-        title = { Text("FIND PHONE TRIGGERED!", color = Color.White, fontWeight = FontWeight.ExtraBold) },
+        containerColor = Color(0xFF381010),
+        title = { Text("Watch Button Pressed", color = Color.White, fontWeight = FontWeight.Bold) },
         text = {
             Text(
-                "Your Lenovo Watch X button was long-pressed. Alarm is ringing.",
-                color = Color(0xFFFECDD3),
+                "Find Phone alert triggered from your Lenovo Watch physical crown button.",
+                color = Color(0xFFFCA5A5),
                 fontSize = 13.sp
             )
         },
@@ -1287,20 +1494,20 @@ fun FindPhoneModal(onDismiss: () -> Unit) {
                 onClick = onDismiss,
                 colors = ButtonDefaults.buttonColors(containerColor = Color.White)
             ) {
-                Text("Dismiss Alarm", color = Color(0xFF7F1D1D), fontWeight = FontWeight.Bold)
+                Text("Dismiss", color = Color(0xFF991B1B), fontWeight = FontWeight.Bold)
             }
         }
     )
 }
 
 @Composable
-fun WatchXTheme(content: @Composable () -> Unit) {
+fun AppleWatchTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            background = Color(0xFF090D16),
-            surface = Color(0xFF131B2E),
-            primary = Color(0xFF00F0FF),
-            secondary = Color(0xFF10B981)
+            background = AppleTheme.Black,
+            surface = AppleTheme.CardDark,
+            primary = AppleTheme.ElectricBlue,
+            secondary = AppleTheme.NeonGreen
         ),
         content = content
     )

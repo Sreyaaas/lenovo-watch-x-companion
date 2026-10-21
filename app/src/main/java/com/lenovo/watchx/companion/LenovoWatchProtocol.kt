@@ -183,6 +183,58 @@ object LenovoWatchProtocol {
         return buildPacket(byteArrayOf(0x03, 0x33, 0x01, high, low), ACTION_TASK, seq)
     }
 
+    fun buildSedentaryPacket(enabled: Boolean, startHour: Int = 9, endHour: Int = 18, intervalMin: Int = 60, seq: Int): ByteArray {
+        val payload = byteArrayOf(
+            0x01, 0x11,
+            if (enabled) 0x01 else 0x00,
+            toBcd8(startHour),
+            toBcd8(endHour),
+            intervalMin.toByte()
+        )
+        return buildPacket(payload, ACTION_WRITE, seq)
+    }
+
+    fun buildDrinkWaterPacket(enabled: Boolean, intervalHours: Int = 2, seq: Int): ByteArray {
+        val payload = byteArrayOf(
+            0x01, 0x12,
+            if (enabled) 0x01 else 0x00,
+            intervalHours.toByte()
+        )
+        return buildPacket(payload, ACTION_WRITE, seq)
+    }
+
+    fun buildTimeFormatPacket(is24Hour: Boolean, seq: Int): ByteArray {
+        val payload = byteArrayOf(
+            0x01, 0x0C,
+            if (is24Hour) 0x01 else 0x00
+        )
+        return buildPacket(payload, ACTION_WRITE, seq)
+    }
+
+    fun buildUnitPacket(isMetric: Boolean, seq: Int): ByteArray {
+        val payload = byteArrayOf(
+            0x01, 0x0D,
+            if (isMetric) 0x00 else 0x01
+        )
+        return buildPacket(payload, ACTION_WRITE, seq)
+    }
+
+    fun buildLanguagePacket(isEnglish: Boolean, seq: Int): ByteArray {
+        val payload = byteArrayOf(
+            0x01, 0x0E,
+            if (isEnglish) 0x01 else 0x00
+        )
+        return buildPacket(payload, ACTION_WRITE, seq)
+    }
+
+    fun buildCameraShutterModePacket(enabled: Boolean, seq: Int): ByteArray {
+        val payload = byteArrayOf(
+            0x03, 0x21,
+            if (enabled) 0x01 else 0x00
+        )
+        return buildPacket(payload, ACTION_TASK, seq)
+    }
+
     fun parseIncomingPacket(buf: ByteArray): WatchResponse? {
         if (buf.size < 6 || buf[0] != HEADER_MAGIC) return null
 

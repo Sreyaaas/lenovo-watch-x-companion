@@ -104,6 +104,30 @@ class LenovoWatchBleService : Service() {
     private val _findPhoneTrigger = MutableStateFlow(false)
     val findPhoneTrigger: StateFlow<Boolean> = _findPhoneTrigger.asStateFlow()
 
+    private val _is24Hour = MutableStateFlow(true)
+    val is24Hour: StateFlow<Boolean> = _is24Hour.asStateFlow()
+
+    private val _isMetric = MutableStateFlow(true)
+    val isMetric: StateFlow<Boolean> = _isMetric.asStateFlow()
+
+    private val _isEnglish = MutableStateFlow(true)
+    val isEnglish: StateFlow<Boolean> = _isEnglish.asStateFlow()
+
+    private val _sedentaryEnabled = MutableStateFlow(false)
+    val sedentaryEnabled: StateFlow<Boolean> = _sedentaryEnabled.asStateFlow()
+
+    private val _drinkWaterEnabled = MutableStateFlow(false)
+    val drinkWaterEnabled: StateFlow<Boolean> = _drinkWaterEnabled.asStateFlow()
+
+    private val _dndEnabled = MutableStateFlow(false)
+    val dndEnabled: StateFlow<Boolean> = _dndEnabled.asStateFlow()
+
+    private val _tiltEnabled = MutableStateFlow(true)
+    val tiltEnabled: StateFlow<Boolean> = _tiltEnabled.asStateFlow()
+
+    private val _cameraModeActive = MutableStateFlow(false)
+    val cameraModeActive: StateFlow<Boolean> = _cameraModeActive.asStateFlow()
+
     // Discovered scan devices
     val discoveredDevices = MutableStateFlow<List<Pair<String, String>>>(emptyList())
 
@@ -428,20 +452,36 @@ class LenovoWatchBleService : Service() {
                 val localNotifSuccess = gatt.setCharacteristicNotification(notifyChar, true)
                 Log.i(TAG, "setCharacteristicNotification returned $localNotifSuccess")
 
-                // 2. Write CCCD Descriptor (0x2902) to notify peripheral
+                // 2. Also check if writeCharacteristic supports notify
+                writeCharacteristic?.let { wc ->
+                    if ((wc.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0) {
+                        gatt.setCharacteristicNotification(wc, true)
+                    }
+                }
+
+                // 3. Write CCCD Descriptor (0x2902) to notify peripheral
                 val descriptor = notifyChar.getDescriptor(LenovoWatchProtocol.UUID_CCCD)
+                    ?: notifyChar.descriptors.firstOrNull { it.uuid.toString().contains("2902") }
+
                 if (descriptor == null) {
                     Log.e(TAG, "CCCD descriptor not found on notify characteristic!")
                     return
                 }
 
+                val cccdValue = if ((notifyChar.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0) {
+                    BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                } else {
+                    BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                }
+
                 val descWriteStarted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    val res = gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    descriptor.value = cccdValue
+                    val res = gatt.writeDescriptor(descriptor, cccdValue)
                     Log.i(TAG, "writeDescriptor (API 33+) result: $res")
                     res == BluetoothStatusCodes.SUCCESS
                 } else {
                     @Suppress("DEPRECATION")
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    descriptor.value = cccdValue
                     @Suppress("DEPRECATION")
                     val res = gatt.writeDescriptor(descriptor)
                     Log.i(TAG, "writeDescriptor (legacy) result: $res")
@@ -473,6 +513,33 @@ class LenovoWatchBleService : Service() {
             val statusStr = if (status == BluetoothGatt.GATT_SUCCESS) "SUCCESS" else "ERROR($status)"
             Log.d(TAG, "onCharacteristicWrite: uuid=${characteristic?.uuid}, status=$statusStr")
             writeCompletionDeferred?.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        // Android 13+ (API 33+)
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int
+        ) {
+            Log.d(TAG, "onCharacteristicRead (API 33+): uuid=${characteristic.uuid}, status=$status, size=${value.size}")
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                onIncomingPacket(characteristic.uuid, value)
+            }
+        }
+
+        // Android 12 and below
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt?,
+            characteristic: BluetoothGattCharacteristic?,
+            status: Int
+        ) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && status == BluetoothGatt.GATT_SUCCESS) {
+                val value = characteristic?.value ?: return
+                val uuid = characteristic.uuid ?: return
+                onIncomingPacket(uuid, value)
+            }
         }
 
         // Android 13+ (API 33+)
@@ -586,10 +653,10 @@ class LenovoWatchBleService : Service() {
     @SuppressLint("MissingPermission")
     private fun sendPacketInternal(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, packet: ByteArray): Boolean {
         val hex = packet.joinToString(" ") { "%02X".format(it) }
-        val writeType = if ((char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
-            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        } else {
+        val writeType = if ((char.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) {
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         }
 
         Log.d(TAG, "TX [${packet.size}b] (writeType=$writeType): $hex")
@@ -747,15 +814,59 @@ class LenovoWatchBleService : Service() {
     }
 
     fun setDnd(enabled: Boolean) {
+        _dndEnabled.value = enabled
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         val packet = LenovoWatchProtocol.buildDndPacket(enabled, seq++)
         sendPacket(packet)
     }
 
     fun setLiftToWake(enabled: Boolean) {
+        _tiltEnabled.value = enabled
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         val packet = LenovoWatchProtocol.buildLiftToWakePacket(enabled, seq++)
         sendPacket(packet)
+    }
+
+    fun setTimeFormat(is24Hour: Boolean) {
+        _is24Hour.value = is24Hour
+        if (_connectionState.value == BleConnectionState.CONNECTED) {
+            sendPacket(LenovoWatchProtocol.buildTimeFormatPacket(is24Hour, seq++))
+        }
+    }
+
+    fun setUnit(isMetric: Boolean) {
+        _isMetric.value = isMetric
+        if (_connectionState.value == BleConnectionState.CONNECTED) {
+            sendPacket(LenovoWatchProtocol.buildUnitPacket(isMetric, seq++))
+        }
+    }
+
+    fun setLanguage(isEnglish: Boolean) {
+        _isEnglish.value = isEnglish
+        if (_connectionState.value == BleConnectionState.CONNECTED) {
+            sendPacket(LenovoWatchProtocol.buildLanguagePacket(isEnglish, seq++))
+        }
+    }
+
+    fun setSedentary(enabled: Boolean, startHour: Int = 9, endHour: Int = 18, intervalMin: Int = 60) {
+        _sedentaryEnabled.value = enabled
+        if (_connectionState.value == BleConnectionState.CONNECTED) {
+            sendPacket(LenovoWatchProtocol.buildSedentaryPacket(enabled, startHour, endHour, intervalMin, seq++))
+        }
+    }
+
+    fun setDrinkWater(enabled: Boolean, intervalHours: Int = 2) {
+        _drinkWaterEnabled.value = enabled
+        if (_connectionState.value == BleConnectionState.CONNECTED) {
+            sendPacket(LenovoWatchProtocol.buildDrinkWaterPacket(enabled, intervalHours, seq++))
+        }
+    }
+
+    fun setCameraMode(enabled: Boolean) {
+        _cameraModeActive.value = enabled
+        if (_connectionState.value == BleConnectionState.CONNECTED) {
+            sendPacket(LenovoWatchProtocol.buildCameraShutterModePacket(enabled, seq++))
+        }
     }
 
     fun setStepGoal(goal: Int) {
