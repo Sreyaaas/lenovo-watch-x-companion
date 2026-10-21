@@ -777,7 +777,7 @@ class LenovoWatchBleService : Service() {
                 val isSuccess = res == BluetoothStatusCodes.SUCCESS
                 if (!isSuccess) {
                     Log.e(TAG, "gatt.writeCharacteristic (API 33+) failed with code: $res")
-                    if (res == BluetoothStatusCodes.ERROR_DEVICE_NOT_CONNECTED || res == BluetoothStatusCodes.ERROR_PROFILE_SERVICE_NOT_BOUND) {
+                    if (res == BluetoothStatusCodes.ERROR_PROFILE_SERVICE_NOT_BOUND) {
                         handleDeadGatt("GATT write failure status $res")
                     }
                 }
