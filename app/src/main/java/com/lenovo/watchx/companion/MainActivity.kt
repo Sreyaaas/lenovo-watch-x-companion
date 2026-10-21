@@ -121,6 +121,9 @@ class MainActivity : ComponentActivity() {
             val stepGoal by (service?.stepGoal?.collectAsState() ?: remember { mutableStateOf(10000) })
             val heartRate by (service?.heartRateBpm?.collectAsState() ?: remember { mutableStateOf(0) })
             val isMeasuringHr by (service?.isMeasuringHr?.collectAsState() ?: remember { mutableStateOf(false) })
+            val bloodPressure by (service?.bloodPressure?.collectAsState() ?: remember { mutableStateOf(Pair(120, 80)) })
+            val isMeasuringBp by (service?.isMeasuringBp?.collectAsState() ?: remember { mutableStateOf(false) })
+            val isCalibratingHands by (service?.isCalibratingHands?.collectAsState() ?: remember { mutableStateOf(false) })
             val sleepData by (service?.sleepSession?.collectAsState() ?: remember { mutableStateOf(SleepSession()) })
             val findPhoneActive by (service?.findPhoneTrigger?.collectAsState() ?: remember { mutableStateOf(false) })
             val discoveredDevices by (service?.discoveredDevices?.collectAsState() ?: remember { mutableStateOf(emptyList()) })
@@ -181,6 +184,8 @@ class MainActivity : ComponentActivity() {
                                         steps = steps,
                                         stepGoal = stepGoal,
                                         heartRate = heartRate,
+                                        bloodPressure = bloodPressure,
+                                        isMeasuringBp = isMeasuringBp,
                                         sleep = sleepData,
                                         battery = battery,
                                         isMetric = isMetric,
@@ -192,10 +197,22 @@ class MainActivity : ComponentActivity() {
                                                 Toast.makeText(this@MainActivity, "Connect watch first", Toast.LENGTH_SHORT).show()
                                             }
                                         },
+                                        onMeasureBp = {
+                                            if (connState == BleConnectionState.CONNECTED) {
+                                                service?.measureBloodPressure()
+                                                Toast.makeText(this@MainActivity, "Measuring pulse wave BP...", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                Toast.makeText(this@MainActivity, "Connect watch first", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        onStartWorkoutClick = {
+                                            selectedTab = AppNavTab.FITNESS
+                                        },
                                         onRefreshTelemetry = {
                                             service?.querySteps()
                                             service?.querySleep()
                                             service?.queryHeartRate()
+                                            service?.queryBloodPressure()
                                             Toast.makeText(this@MainActivity, "Refreshing telemetry...", Toast.LENGTH_SHORT).show()
                                         }
                                     )
@@ -204,12 +221,20 @@ class MainActivity : ComponentActivity() {
                                         stepGoal = stepGoal,
                                         heartRate = heartRate,
                                         isMeasuringHr = isMeasuringHr,
+                                        bloodPressure = bloodPressure,
+                                        isMeasuringBp = isMeasuringBp,
                                         sleep = sleepData,
                                         isMetric = isMetric,
                                         onSetGoal = { service?.setStepGoal(it) },
-                                        onMeasureHr = { service?.measureHeartRate() }
+                                        onMeasureHr = { service?.measureHeartRate() },
+                                        onMeasureBp = { service?.measureBloodPressure() },
+                                        onCalibrateBp = { s, d ->
+                                            service?.calibrateBloodPressure(s, d)
+                                            Toast.makeText(this@MainActivity, "Calibrated BP: $s/$d mmHg", Toast.LENGTH_SHORT).show()
+                                        }
                                     )
                                     AppNavTab.HANDS -> AppleCalibrationTab(
+                                        isCalibrating = isCalibratingHands,
                                         onCalibrate = { hour, min ->
                                             if (connState == BleConnectionState.CONNECTED) {
                                                 service?.calibrateHands(hour, min)
@@ -479,10 +504,14 @@ fun AppleSummaryTab(
     steps: Int,
     stepGoal: Int,
     heartRate: Int,
+    bloodPressure: Pair<Int, Int>,
+    isMeasuringBp: Boolean,
     sleep: SleepSession,
     battery: Int,
     isMetric: Boolean,
     onMeasureHr: () -> Unit,
+    onMeasureBp: () -> Unit,
+    onStartWorkoutClick: () -> Unit,
     onRefreshTelemetry: () -> Unit
 ) {
     val distance = if (isMetric) {
@@ -591,7 +620,7 @@ fun AppleSummaryTab(
             }
         }
 
-        // Apple Health 2x2 Metric Grid
+        // Row 1: Heart Rate & Blood Pressure
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -658,6 +687,79 @@ fun AppleSummaryTab(
                     }
                 }
 
+                // Blood Pressure Card
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, AppleTheme.Border)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Favorite,
+                                contentDescription = null,
+                                tint = Color(0xFFFF5252),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "BLOOD PRESSURE",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFFF5252),
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                text = "${bloodPressure.first}/${bloodPressure.second}",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppleTheme.TextPrimary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "mmHg",
+                                fontSize = 11.sp,
+                                color = AppleTheme.TextSecondary,
+                                modifier = Modifier.padding(bottom = 2.dp)
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(AppleTheme.InsetDark)
+                                .clickable { onMeasureBp() }
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (isMeasuringBp) "Sampling..." else "Measure",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFFFF5252)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Row 2: Sleep Metric Card & Workout Launcher
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 // Sleep Metric Card
                 Card(
                     modifier = Modifier.weight(1f),
@@ -704,6 +806,58 @@ fun AppleSummaryTab(
                             fontSize = 11.sp,
                             color = AppleTheme.TextSecondary
                         )
+                    }
+                }
+
+                // Apple Workout Outdoor Run Card
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onStartWorkoutClick() },
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, AppleTheme.Border)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.DirectionsRun,
+                                contentDescription = null,
+                                tint = AppleTheme.NeonGreen,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "WORKOUT",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppleTheme.NeonGreen,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+
+                        Text(
+                            text = "Outdoor Run",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AppleTheme.TextPrimary
+                        )
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(AppleTheme.NeonGreen.copy(alpha = 0.15f))
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Start Run", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = AppleTheme.NeonGreen)
+                        }
                     }
                 }
             }
@@ -762,18 +916,336 @@ fun AppleFitnessDetailTab(
     stepGoal: Int,
     heartRate: Int,
     isMeasuringHr: Boolean,
+    bloodPressure: Pair<Int, Int>,
+    isMeasuringBp: Boolean,
     sleep: SleepSession,
     isMetric: Boolean,
     onSetGoal: (Int) -> Unit,
-    onMeasureHr: () -> Unit
+    onMeasureHr: () -> Unit,
+    onMeasureBp: () -> Unit,
+    onCalibrateBp: (Int, Int) -> Unit
 ) {
     var goalValue by remember { mutableStateOf(stepGoal.toFloat()) }
+
+    // Workout Tracker State
+    var isWorkoutActive by remember { mutableStateOf(false) }
+    var isWorkoutPaused by remember { mutableStateOf(false) }
+    var elapsedSeconds by remember { mutableStateOf(0L) }
+    var workoutStartSteps by remember { mutableStateOf(0) }
+    var showWorkoutSummary by remember { mutableStateOf(false) }
+    var completedDuration by remember { mutableStateOf(0L) }
+    var completedSteps by remember { mutableStateOf(0) }
+    var completedDistance by remember { mutableStateOf("") }
+    var completedCalories by remember { mutableStateOf(0) }
+    var completedPace by remember { mutableStateOf("") }
+
+    // BP Calibration Dialog State
+    var showBpDialog by remember { mutableStateOf(false) }
+    var inputSys by remember { mutableStateOf(120) }
+    var inputDia by remember { mutableStateOf(80) }
+
+    // Timer effect
+    LaunchedEffect(isWorkoutActive, isWorkoutPaused) {
+        if (isWorkoutActive && !isWorkoutPaused) {
+            while (true) {
+                delay(1000L)
+                elapsedSeconds++
+            }
+        }
+    }
+
+    val currentWorkoutSteps = if (isWorkoutActive) (steps - workoutStartSteps).coerceAtLeast(0) else 0
+    val distanceKm = currentWorkoutSteps * 0.00078
+    val distanceStr = if (isMetric) "%.2f km".format(distanceKm) else "%.2f mi".format(distanceKm * 0.621371)
+    val paceStr = if (distanceKm > 0.02 && elapsedSeconds > 10) {
+        val secPerKm = (elapsedSeconds / distanceKm).toLong()
+        "%02d'%02d\" /km".format(secPerKm / 60, secPerKm % 60)
+    } else {
+        "--'--\" /km"
+    }
+    val cadence = if (elapsedSeconds > 10) ((currentWorkoutSteps.toFloat() / (elapsedSeconds / 60f)).toInt()) else 0
+    val activeKcal = (currentWorkoutSteps * 0.045 + (elapsedSeconds / 60) * 4.5).toInt()
+
+    val hrZone = when {
+        heartRate == 0 -> "Resting"
+        heartRate < 120 -> "Zone 1 • Warm-up"
+        heartRate < 140 -> "Zone 2 • Fat Burn"
+        heartRate < 160 -> "Zone 3 • Aerobic"
+        heartRate < 180 -> "Zone 4 • Threshold"
+        else -> "Zone 5 • Peak"
+    }
+
+    val (bpCategory, bpCategoryColor) = when {
+        bloodPressure.first < 120 && bloodPressure.second < 80 -> "Normal" to AppleTheme.NeonGreen
+        bloodPressure.first in 120..129 && bloodPressure.second < 80 -> "Elevated" to AppleTheme.AmberOrange
+        bloodPressure.first in 130..139 || bloodPressure.second in 80..89 -> "Stage 1" to Color(0xFFFFD60A)
+        else -> "Stage 2" to AppleTheme.CoralRed
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Step Goal Adjuster
+        // --- 1. APPLE WORKOUT: OUTDOOR RUN ---
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+                border = androidx.compose.foundation.BorderStroke(0.5.dp, if (isWorkoutActive) AppleTheme.NeonGreen else AppleTheme.Border)
+            ) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    // Header Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(
+                                Icons.Filled.DirectionsRun,
+                                contentDescription = null,
+                                tint = AppleTheme.NeonGreen,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "OUTDOOR RUN",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp,
+                                color = AppleTheme.NeonGreen
+                            )
+                        }
+
+                        if (isWorkoutActive) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isWorkoutPaused) AppleTheme.AmberOrange.copy(alpha = 0.2f) else AppleTheme.NeonGreen.copy(alpha = 0.2f))
+                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = if (isWorkoutPaused) "PAUSED" else "LIVE SESSION",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isWorkoutPaused) AppleTheme.AmberOrange else AppleTheme.NeonGreen
+                                )
+                            }
+                        }
+                    }
+
+                    if (!isWorkoutActive) {
+                        Text(
+                            text = "Track your outdoor running with real-time pace, distance, cadence (SPM), active calories, and live heart rate training zones.",
+                            fontSize = 13.sp,
+                            color = AppleTheme.TextSecondary
+                        )
+
+                        Button(
+                            onClick = {
+                                isWorkoutActive = true
+                                isWorkoutPaused = false
+                                elapsedSeconds = 0L
+                                workoutStartSteps = steps
+                                onMeasureHr()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.NeonGreen)
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Start Outdoor Run", fontWeight = FontWeight.Bold, color = Color.Black)
+                        }
+                    } else {
+                        // Live Session HUD
+                        val hours = elapsedSeconds / 3600
+                        val mins = (elapsedSeconds % 3600) / 60
+                        val secs = elapsedSeconds % 60
+                        val timeStr = if (hours > 0) "%02d:%02d:%02d".format(hours, mins, secs) else "%02d:%02d".format(mins, secs)
+
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = timeStr,
+                                fontSize = 42.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = FontFamily.Monospace,
+                                color = AppleTheme.TextPrimary
+                            )
+                            Text("ELAPSED TIME", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = AppleTheme.TextSecondary, letterSpacing = 0.8.sp)
+                        }
+
+                        // 4-Metric Grid
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Column {
+                                Text(distanceStr, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = AppleTheme.ElectricBlue)
+                                Text("DISTANCE", fontSize = 10.sp, color = AppleTheme.TextSecondary)
+                            }
+                            Column {
+                                Text(paceStr, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = AppleTheme.AmberOrange)
+                                Text("PACE", fontSize = 10.sp, color = AppleTheme.TextSecondary)
+                            }
+                            Column {
+                                Text("$activeKcal", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = AppleTheme.CoralRed)
+                                Text("ACTIVE KCAL", fontSize = 10.sp, color = AppleTheme.TextSecondary)
+                            }
+                            Column {
+                                Text("$cadence", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = AppleTheme.NeonGreen)
+                                Text("SPM (CADENCE)", fontSize = 10.sp, color = AppleTheme.TextSecondary)
+                            }
+                        }
+
+                        // Live Heart Rate & HR Training Zone Bar
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = AppleTheme.InsetDark)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Icon(Icons.Filled.Favorite, contentDescription = null, tint = AppleTheme.CardioPink, modifier = Modifier.size(16.dp))
+                                        Text(if (heartRate > 0) "$heartRate BPM" else "-- BPM", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppleTheme.TextPrimary)
+                                    }
+                                    Text(hrZone, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = AppleTheme.CardioPink)
+                                }
+
+                                // 5-Segment Zone Meter
+                                Row(modifier = Modifier.fillMaxWidth().height(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Box(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(if (heartRate in 1..119) AppleTheme.ElectricBlue else Color(0xFF2C2C2E)))
+                                    Box(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(if (heartRate in 120..139) AppleTheme.NeonGreen else Color(0xFF2C2C2E)))
+                                    Box(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(if (heartRate in 140..159) Color(0xFFFFD60A) else Color(0xFF2C2C2E)))
+                                    Box(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(if (heartRate in 160..179) AppleTheme.AmberOrange else Color(0xFF2C2C2E)))
+                                    Box(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(if (heartRate >= 180) AppleTheme.CoralRed else Color(0xFF2C2C2E)))
+                                }
+                            }
+                        }
+
+                        // Workout Buttons
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (!isWorkoutPaused) {
+                                Button(
+                                    onClick = { isWorkoutPaused = true },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.AmberOrange)
+                                ) {
+                                    Icon(Icons.Filled.Pause, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Pause", fontWeight = FontWeight.Bold, color = Color.Black)
+                                }
+                            } else {
+                                Button(
+                                    onClick = { isWorkoutPaused = false },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.NeonGreen)
+                                ) {
+                                    Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Resume", fontWeight = FontWeight.Bold, color = Color.Black)
+                                }
+                            }
+
+                            Button(
+                                onClick = {
+                                    completedDuration = elapsedSeconds
+                                    completedSteps = currentWorkoutSteps
+                                    completedDistance = distanceStr
+                                    completedCalories = activeKcal
+                                    completedPace = paceStr
+                                    isWorkoutActive = false
+                                    isWorkoutPaused = false
+                                    showWorkoutSummary = true
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.CoralRed)
+                            ) {
+                                Icon(Icons.Filled.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("End Run", fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- 2. BLOOD PRESSURE & HEMODYNAMICS ---
+        item {
+            AppleGroupCard(title = "Blood Pressure Suite") {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Arterial Pressure", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = AppleTheme.TextPrimary)
+                            Text("Photoplethysmography pulse wave transit analysis", fontSize = 11.sp, color = AppleTheme.TextSecondary)
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(bpCategoryColor.copy(alpha = 0.2f))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(text = bpCategory, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = bpCategoryColor)
+                        }
+                    }
+
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text(
+                            text = "${bloodPressure.first} / ${bloodPressure.second}",
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontFamily = FontFamily.Monospace,
+                            color = AppleTheme.TextPrimary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "mmHg",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = AppleTheme.TextSecondary,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = onMeasureBp,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
+                        ) {
+                            Text(
+                                text = if (isMeasuringBp) "Measuring Pulse Wave..." else "Measure Blood Pressure",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 13.sp
+                            )
+                        }
+
+                        Button(
+                            onClick = { showBpDialog = true },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark)
+                        ) {
+                            Text("Calibrate", color = AppleTheme.TextPrimary, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- 3. STEP GOAL ADJUSTER ---
         item {
             AppleGroupCard(title = "Daily Target") {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -814,7 +1286,7 @@ fun AppleFitnessDetailTab(
             }
         }
 
-        // Live Heart Rate Monitor
+        // --- 4. LIVE HEART RATE MONITOR ---
         item {
             AppleGroupCard(title = "Cardio Health") {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -825,7 +1297,7 @@ fun AppleFitnessDetailTab(
                     ) {
                         Column {
                             Text("Optical PPG Sensor", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = AppleTheme.TextPrimary)
-                            Text("Measures pulse via green photoplethysmography", fontSize = 11.sp, color = AppleTheme.TextSecondary)
+                            Text("Dual green photoplethysmography LEDs", fontSize = 11.sp, color = AppleTheme.TextSecondary)
                         }
 
                         Text(
@@ -843,7 +1315,7 @@ fun AppleFitnessDetailTab(
                         colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.CardioPink)
                     ) {
                         Text(
-                            text = if (isMeasuringHr) "Sampling..." else "Start Heart Rate Reading",
+                            text = if (isMeasuringHr) "Sampling optical sensor (20s)..." else "Start Heart Rate Reading",
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
@@ -852,7 +1324,7 @@ fun AppleFitnessDetailTab(
             }
         }
 
-        // Sleep Breakdown Bars
+        // --- 5. SLEEP BREAKDOWN BARS ---
         item {
             AppleGroupCard(title = "Sleep Architecture") {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -893,6 +1365,83 @@ fun AppleFitnessDetailTab(
             }
         }
     }
+
+    // Workout Summary Dialog
+    if (showWorkoutSummary) {
+        AlertDialog(
+            onDismissRequest = { showWorkoutSummary = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Filled.DirectionsRun, contentDescription = null, tint = AppleTheme.NeonGreen)
+                    Text("Workout Complete!", color = AppleTheme.TextPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Great job! Here is your run recap:", fontSize = 13.sp, color = AppleTheme.TextSecondary)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("• Duration: ${completedDuration / 60}m ${completedDuration % 60}s", fontSize = 14.sp, color = AppleTheme.TextPrimary)
+                    Text("• Distance: $completedDistance", fontSize = 14.sp, color = AppleTheme.ElectricBlue, fontWeight = FontWeight.Bold)
+                    Text("• Steps: $completedSteps", fontSize = 14.sp, color = AppleTheme.TextPrimary)
+                    Text("• Average Pace: $completedPace", fontSize = 14.sp, color = AppleTheme.AmberOrange, fontWeight = FontWeight.SemiBold)
+                    Text("• Active Calories: $completedCalories kcal", fontSize = 14.sp, color = AppleTheme.CoralRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showWorkoutSummary = false }) {
+                    Text("Done", color = AppleTheme.NeonGreen, fontWeight = FontWeight.Bold)
+                }
+            },
+            containerColor = AppleTheme.CardDark
+        )
+    }
+
+    // BP Calibration Dialog
+    if (showBpDialog) {
+        AlertDialog(
+            onDismissRequest = { showBpDialog = false },
+            title = { Text("Calibrate Blood Pressure", color = AppleTheme.TextPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Enter reference readings from an arm cuff to calibrate your watch's optical pulse algorithm:",
+                        fontSize = 12.sp,
+                        color = AppleTheme.TextSecondary
+                    )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Systolic (mmHg):", color = AppleTheme.TextPrimary, fontSize = 13.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(onClick = { if (inputSys > 90) inputSys -= 5 }, colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark), modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text("-") }
+                            Text("$inputSys", fontWeight = FontWeight.Bold, color = AppleTheme.TextPrimary, modifier = Modifier.width(36.dp), textAlign = TextAlign.Center)
+                            Button(onClick = { if (inputSys < 180) inputSys += 5 }, colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark), modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text("+") }
+                        }
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Diastolic (mmHg):", color = AppleTheme.TextPrimary, fontSize = 13.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(onClick = { if (inputDia > 50) inputDia -= 5 }, colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark), modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text("-") }
+                            Text("$inputDia", fontWeight = FontWeight.Bold, color = AppleTheme.TextPrimary, modifier = Modifier.width(36.dp), textAlign = TextAlign.Center)
+                            Button(onClick = { if (inputDia < 120) inputDia += 5 }, colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark), modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text("+") }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onCalibrateBp(inputSys, inputDia)
+                    showBpDialog = false
+                }) {
+                    Text("Save & Calibrate", color = AppleTheme.ElectricBlue, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBpDialog = false }) {
+                    Text("Cancel", color = AppleTheme.TextSecondary)
+                }
+            },
+            containerColor = AppleTheme.CardDark
+        )
+    }
 }
 
 /* ========================================================================= */
@@ -901,6 +1450,7 @@ fun AppleFitnessDetailTab(
 
 @Composable
 fun AppleCalibrationTab(
+    isCalibrating: Boolean = false,
     onCalibrate: (Int, Int) -> Unit,
     onSyncClock: () -> Unit
 ) {
@@ -911,6 +1461,43 @@ fun AppleCalibrationTab(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Active Calibration Banner
+        if (isCalibrating) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppleTheme.CardDark),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, AppleTheme.ElectricBlue)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = AppleTheme.ElectricBlue,
+                            modifier = Modifier.size(28.dp),
+                            strokeWidth = 3.dp
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = "Stepping Motors Rotating (~12s)",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppleTheme.ElectricBlue
+                            )
+                            Text(
+                                text = "Watch MCU is moving needles into alignment. Please wait.",
+                                fontSize = 11.sp,
+                                color = AppleTheme.TextSecondary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             AppleGroupCard(title = "Mechanical Alignment") {
                 Column(
@@ -919,17 +1506,25 @@ fun AppleCalibrationTab(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Text(
-                        text = "Align Watch Needles",
+                        text = "Physical Needles Calibration",
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
                         color = AppleTheme.TextPrimary
                     )
-                    Text(
-                        text = "Look at where your physical mechanical hands are pointing on the watch face. Adjust below to match their current positions, then calibrate.",
-                        fontSize = 12.sp,
-                        color = AppleTheme.TextSecondary,
-                        textAlign = TextAlign.Center
-                    )
+
+                    // 3-step Instructions Card
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = AppleTheme.InsetDark)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("HOW HAND CALIBRATION WORKS:", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = AppleTheme.ElectricBlue, letterSpacing = 0.8.sp)
+                            Text("1. Look at your physical watch dial right now.", fontSize = 12.sp, color = AppleTheme.TextPrimary)
+                            Text("2. Set the numbers below to match where your needles are pointing.", fontSize = 12.sp, color = AppleTheme.TextPrimary)
+                            Text("3. Tap Calibrate. The motors will sweep the hands to match your phone's real time.", fontSize = 12.sp, color = AppleTheme.TextPrimary)
+                        }
+                    }
 
                     // Dial Display
                     Text(
@@ -947,6 +1542,7 @@ fun AppleCalibrationTab(
                     ) {
                         Button(
                             onClick = { hour = if (hour <= 1) 12 else hour - 1 },
+                            enabled = !isCalibrating,
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
@@ -954,6 +1550,7 @@ fun AppleCalibrationTab(
 
                         Button(
                             onClick = { hour = if (hour >= 12) 1 else hour + 1 },
+                            enabled = !isCalibrating,
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
@@ -961,6 +1558,7 @@ fun AppleCalibrationTab(
 
                         Button(
                             onClick = { minute = (minute + 59) % 60 },
+                            enabled = !isCalibrating,
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
@@ -968,6 +1566,7 @@ fun AppleCalibrationTab(
 
                         Button(
                             onClick = { minute = (minute + 1) % 60 },
+                            enabled = !isCalibrating,
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
@@ -975,6 +1574,7 @@ fun AppleCalibrationTab(
 
                         Button(
                             onClick = { minute = (minute + 5) % 60 },
+                            enabled = !isCalibrating,
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.weight(1f)
@@ -983,11 +1583,16 @@ fun AppleCalibrationTab(
 
                     Button(
                         onClick = { onCalibrate(hour, minute) },
+                        enabled = !isCalibrating,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.ElectricBlue)
                     ) {
-                        Text("Calibrate Mechanical Motors", fontWeight = FontWeight.Bold, color = Color.White)
+                        Text(
+                            text = if (isCalibrating) "Motors Moving..." else "Calibrate Mechanical Motors",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
                     }
                 }
             }
@@ -997,12 +1602,13 @@ fun AppleCalibrationTab(
             AppleGroupCard(title = "Atomic Clock") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "Once needles are aligned, synchronize with phone network time.",
+                        text = "Synchronize digital clock and time registers with phone network time.",
                         fontSize = 12.sp,
                         color = AppleTheme.TextSecondary
                     )
                     Button(
                         onClick = onSyncClock,
+                        enabled = !isCalibrating,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark)

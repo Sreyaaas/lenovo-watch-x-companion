@@ -107,6 +107,15 @@ class LenovoWatchBleService : Service() {
     private val _isMeasuringHr = MutableStateFlow(false)
     val isMeasuringHr: StateFlow<Boolean> = _isMeasuringHr.asStateFlow()
 
+    private val _bloodPressure = MutableStateFlow(Pair(120, 80))
+    val bloodPressure: StateFlow<Pair<Int, Int>> = _bloodPressure.asStateFlow()
+
+    private val _isMeasuringBp = MutableStateFlow(false)
+    val isMeasuringBp: StateFlow<Boolean> = _isMeasuringBp.asStateFlow()
+
+    private val _isCalibratingHands = MutableStateFlow(false)
+    val isCalibratingHands: StateFlow<Boolean> = _isCalibratingHands.asStateFlow()
+
     private val _sleepSession = MutableStateFlow(SleepSession())
     val sleepSession: StateFlow<SleepSession> = _sleepSession.asStateFlow()
 
@@ -710,6 +719,11 @@ class LenovoWatchBleService : Service() {
                     _isMeasuringHr.value = false
                     Log.i(TAG, "Updated heart rate: ${parsed.bpm} bpm")
                 }
+                is WatchResponse.BloodPressure -> {
+                    _bloodPressure.value = Pair(parsed.systolic, parsed.diastolic)
+                    _isMeasuringBp.value = false
+                    Log.i(TAG, "Updated blood pressure: ${parsed.systolic}/${parsed.diastolic} mmHg")
+                }
                 is WatchResponse.Sleep -> {
                     _sleepSession.value = SleepSession(
                         totalMinutes = parsed.totalMinutes,
@@ -868,15 +882,20 @@ class LenovoWatchBleService : Service() {
             delay(300)
 
             // 8. Query Heart Rate Telemetry
-            Log.i(TAG, "Step 8/8: Querying Heart Rate Telemetry")
+            Log.i(TAG, "Step 8/9: Querying Heart Rate Telemetry")
             sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq = seq++))
+            delay(300)
+
+            // 9. Query Blood Pressure Telemetry
+            Log.i(TAG, "Step 9/9: Querying Blood Pressure Telemetry")
+            sendPacket(LenovoWatchProtocol.buildBpQueryPacket(seq = seq++))
             delay(300)
 
             // Lower connection priority to BALANCED to save watch battery
             Log.i(TAG, "Initialization complete. Switching to BALANCED BLE connection priority")
             bluetoothGatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
 
-            // Start periodic sync (steps, battery, and HR every 45s as keep-alive)
+            // Start periodic sync (steps, battery, HR, and BP every 45s as keep-alive)
             startPeriodicSync()
             Log.i(TAG, "==================== WATCH X READY & ACTIVE ====================")
         }
@@ -894,6 +913,8 @@ class LenovoWatchBleService : Service() {
                     sendPacket(LenovoWatchProtocol.buildBatteryQueryPacket(seq++))
                     delay(300)
                     queryHeartRate()
+                    delay(300)
+                    queryBloodPressure()
                 }
             }
         }
@@ -925,19 +946,74 @@ class LenovoWatchBleService : Service() {
         _isMeasuringHr.value = true
         Log.i(TAG, "Starting optical PPG heart rate measurement")
         serviceScope.launch {
-            // Start green optical sensor (CMD_HEART_RATE_MEASURE: 0x03, 0x23, 0x01)
+            // Start green optical sensor (CMD_HEART_RATE_MEASURE: 0x03, 0x23, 0x01 with both TASK and WRITE, plus BP measure trigger)
             sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = true, seq = seq++))
-            delay(500)
-            // Query stored HR reading as well
+            delay(150)
+            sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementWritePacket(start = true, seq = seq++))
+            delay(150)
+            sendPacket(LenovoWatchProtocol.buildBpMeasurePacket(start = true, seq = seq++))
+            delay(400)
+            // Query stored HR reading
             sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
 
-            // Keep sensor active for 20 seconds
-            delay(20_000)
+            // Keep sensor active for 20 seconds, querying periodically
+            for (step in 1..6) {
+                delay(3000)
+                if (!_isMeasuringHr.value) break
+                sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
+            }
+
             _isMeasuringHr.value = false
             // Turn off optical sensor LEDs
             sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = false, seq = seq++))
+            delay(150)
+            sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementWritePacket(start = false, seq = seq++))
+            delay(150)
+            sendPacket(LenovoWatchProtocol.buildBpMeasurePacket(start = false, seq = seq++))
             delay(300)
             sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
+        }
+    }
+
+    fun queryBloodPressure() {
+        if (_connectionState.value != BleConnectionState.CONNECTED) return
+        sendPacket(LenovoWatchProtocol.buildBpQueryPacket(seq++))
+    }
+
+    fun calibrateBloodPressure(systolic: Int, diastolic: Int) {
+        if (_connectionState.value != BleConnectionState.CONNECTED) return
+        Log.i(TAG, "Sending BP calibration: $systolic / $diastolic mmHg")
+        sendPacket(LenovoWatchProtocol.buildBpCalibrationPacket(systolic, diastolic, seq++))
+        serviceScope.launch {
+            delay(600)
+            queryBloodPressure()
+        }
+    }
+
+    fun measureBloodPressure() {
+        if (_connectionState.value != BleConnectionState.CONNECTED) return
+        _isMeasuringBp.value = true
+        Log.i(TAG, "Starting optical PPG blood pressure measurement")
+        serviceScope.launch {
+            // Trigger BP optical measurement
+            sendPacket(LenovoWatchProtocol.buildBpMeasurePacket(start = true, seq = seq++))
+            delay(200)
+            sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = true, seq = seq++))
+
+            // Loop checking for incoming BP data over 25 seconds
+            for (step in 1..8) {
+                delay(3000)
+                if (!_isMeasuringBp.value) break
+                sendPacket(LenovoWatchProtocol.buildBpQueryPacket(seq++))
+                delay(200)
+                sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
+            }
+
+            _isMeasuringBp.value = false
+            sendPacket(LenovoWatchProtocol.buildBpMeasurePacket(start = false, seq = seq++))
+            sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = false, seq = seq++))
+            delay(300)
+            sendPacket(LenovoWatchProtocol.buildBpQueryPacket(seq++))
         }
     }
 
@@ -957,29 +1033,39 @@ class LenovoWatchBleService : Service() {
     fun calibrateHands(hour: Int, minute: Int) {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         serviceScope.launch {
-            Log.i(TAG, "Calibrating mechanical hands with position $hour:$minute")
+            _isCalibratingHands.value = true
+            Log.i(TAG, "Calibrating mechanical hands with observed position $hour:$minute")
             // 1. Enter calibration mode
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x31, 0x01), LenovoWatchProtocol.ACTION_TASK, seq++))
-            delay(200)
+            delay(250)
 
             // 2. Keep calibration alive
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x34), LenovoWatchProtocol.ACTION_KEEP_ALIVE, seq++))
-            delay(150)
+            delay(200)
 
             // 3. Send physical hand positions (total seconds)
             val pos = ((hour % 12) * 60 + minute) * 60
             val high = ((pos shr 8) and 0xFF).toByte()
             val low = (pos and 0xFF).toByte()
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x33, 0x01, high, low), LenovoWatchProtocol.ACTION_TASK, seq++))
-            delay(400)
 
-            // 4. Send atomic time so watch calculates delta angle and spins motors to current time
-            syncTime()
+            // 4. Send atomic time so watch calculates delta angle and starts motor movement
             delay(300)
+            syncTime()
 
-            // 5. Exit calibration mode
+            // 5. Allow 12 seconds for mechanical stepping motors to physically sweep hands into place.
+            // Pulse keep-alive every 3 seconds so the watch hardware does not abort rotation
+            for (step in 1..4) {
+                delay(3000)
+                sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x34), LenovoWatchProtocol.ACTION_KEEP_ALIVE, seq++))
+            }
+
+            // 6. Exit calibration mode once hands have reached position
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x31, 0x00), LenovoWatchProtocol.ACTION_TASK, seq++))
-            Log.i(TAG, "Calibration mode completed")
+            delay(300)
+            syncTime()
+            _isCalibratingHands.value = false
+            Log.i(TAG, "Calibration mode completed and hands aligned to real time")
         }
     }
 

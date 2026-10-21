@@ -8,6 +8,7 @@ sealed class WatchResponse {
     data class Firmware(val version: String) : WatchResponse()
     data class Steps(val count: Int) : WatchResponse()
     data class HeartRate(val bpm: Int) : WatchResponse()
+    data class BloodPressure(val systolic: Int, val diastolic: Int) : WatchResponse()
     data class Sleep(val totalMinutes: Int, val deepMinutes: Int, val lightMinutes: Int, val awakeMinutes: Int) : WatchResponse()
     object ButtonTriggered : WatchResponse()
     object Ack : WatchResponse()
@@ -44,6 +45,10 @@ object LenovoWatchProtocol {
     val CMD_FITNESS_GOAL = byteArrayOf(0x10, 0x02)
     val CMD_DAY_STEPS = byteArrayOf(0x10, 0x03)
     val CMD_RETRIEVE_DATA = byteArrayOf(0xF0.toByte(), 0x10)
+    val CMD_BLOOD_PRESSURE_MEASURE = byteArrayOf(0x05, 0x0D)
+    val CMD_BP_CALIBRATION = byteArrayOf(0x05, 0x0C)
+    val CMD_IS_BP_CALIBRATED = byteArrayOf(0x05, 0x0B)
+    val CMD_BP_QUERY = byteArrayOf(0xF0.toByte(), 0x10, 0x00, 0x06)
 
     fun calculateChecksum(bytes: ByteArray): Byte {
         var checksum = 0
@@ -105,6 +110,33 @@ object LenovoWatchProtocol {
     fun buildHeartRateMeasurementPacket(start: Boolean, seq: Int): ByteArray {
         val sub = if (start) 0x01.toByte() else 0x00.toByte()
         return buildPacket(byteArrayOf(0x03, 0x23, sub), ACTION_TASK, seq)
+    }
+
+    fun buildHeartRateMeasurementWritePacket(start: Boolean, seq: Int): ByteArray {
+        val sub = if (start) 0x01.toByte() else 0x00.toByte()
+        return buildPacket(byteArrayOf(0x03, 0x23, sub), ACTION_WRITE, seq)
+    }
+
+    fun buildBpMeasurePacket(start: Boolean, seq: Int): ByteArray {
+        val sub = if (start) 0x01.toByte() else 0x00.toByte()
+        return buildPacket(byteArrayOf(0x05, 0x0D, sub), ACTION_TASK, seq)
+    }
+
+    fun buildBpCalibrationPacket(systolic: Int, diastolic: Int, seq: Int): ByteArray {
+        val highSys = ((systolic shr 8) and 0xFF).toByte()
+        val lowSys = (systolic and 0xFF).toByte()
+        val highDia = ((diastolic shr 8) and 0xFF).toByte()
+        val lowDia = (diastolic and 0xFF).toByte()
+        val payload = byteArrayOf(0x05, 0x0C, 0x01, highSys, lowSys, highDia, lowDia)
+        return buildPacket(payload, ACTION_TASK, seq)
+    }
+
+    fun buildBpQueryPacket(seq: Int): ByteArray {
+        return buildPacket(CMD_BP_QUERY, ACTION_READ, seq)
+    }
+
+    fun buildIsBpCalibratedPacket(seq: Int): ByteArray {
+        return buildPacket(CMD_IS_BP_CALIBRATED, ACTION_READ, seq)
     }
 
     fun buildVibrationPacket(seq: Int): ByteArray {
@@ -354,6 +386,35 @@ object LenovoWatchProtocol {
                     val light = if (i + 7 < buf.size) ((lightHigh shl 8) or lightLow) else 240
                     val awake = 35
                     return WatchResponse.Sleep(deep + light + awake, deep, light, awake)
+                } else if (subType == 0x06) {
+                    // Blood pressure record!
+                    for (k in buf.size - 2 downTo i + 4) {
+                        val sys = buf[k].toInt() and 0xFF
+                        val dia = buf.getOrNull(k + 1)?.toInt()?.and(0xFF) ?: 0
+                        if (sys in 70..230 && dia in 40..150 && sys > dia) {
+                            return WatchResponse.BloodPressure(sys, dia)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Live Blood Pressure: CMD 0x05, 0x0D or 0x05, 0x0C
+        for (i in 0 until buf.size - 4) {
+            if (buf[i] == 0x05.toByte() && (buf[i + 1] == 0x0D.toByte() || buf[i + 1] == 0x0C.toByte())) {
+                if (i + 5 < buf.size) {
+                    val sys16 = ((buf[i + 2].toInt() and 0xFF) shl 8) or (buf[i + 3].toInt() and 0xFF)
+                    val dia16 = ((buf[i + 4].toInt() and 0xFF) shl 8) or (buf[i + 5].toInt() and 0xFF)
+                    if (sys16 in 60..250 && dia16 in 40..160 && sys16 > dia16) {
+                        return WatchResponse.BloodPressure(sys16, dia16)
+                    }
+                }
+                if (i + 3 < buf.size) {
+                    val sys8 = buf[i + 2].toInt() and 0xFF
+                    val dia8 = buf[i + 3].toInt() and 0xFF
+                    if (sys8 in 60..250 && dia8 in 40..160 && sys8 > dia8) {
+                        return WatchResponse.BloodPressure(sys8, dia8)
+                    }
                 }
             }
         }
