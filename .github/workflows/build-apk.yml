@@ -21,18 +21,19 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Setup Gradle Cache
+    - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
 
     - name: Build Debug APK
       working-directory: ./android-companion
       run: |
-        chmod +x gradlew || true
-        gradle assembleDebug --stacktrace || ./gradlew assembleDebug
+        gradle wrapper --gradle-version 8.7
+        chmod +x gradlew
+        ./gradlew assembleDebug --stacktrace
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: LenovoWatchX-Companion-Debug-APK
         path: android-companion/app/build/outputs/apk/debug/*.apk
-        if-no-files-found: warn
+        if-no-files-found: error
