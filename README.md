@@ -11,7 +11,7 @@
 
 ## ⌚ Overview
 
-The official Lenovo Watch app was removed from the Google Play Store over 8 years ago. It relied on obsolete Chinese cloud servers that no longer respond and suffered from battery-draining wake locks.
+The official Lenovo Watch app was removed from the Google Play Store. It relied on obsolete Chinese cloud servers that no longer respond and suffered from battery-draining wake locks.
 
 **Watch X Companion** is a clean, modern native Android app designed to completely restore your Lenovo Watch X hardware with **zero cloud dependencies, zero tracking, and zero bloat**.
 
