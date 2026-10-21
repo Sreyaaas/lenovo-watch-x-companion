@@ -476,13 +476,13 @@ class LenovoWatchBleService : Service() {
 
     fun setDnd(enabled: Boolean) {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
-        val packet = LenovoWatchProtocol.buildDndPacket(enabled, seq++))
+        val packet = LenovoWatchProtocol.buildDndPacket(enabled, seq++)
         sendPacket(packet)
     }
 
     fun setLiftToWake(enabled: Boolean) {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
-        val packet = LenovoWatchProtocol.buildLiftToWakePacket(enabled, seq++))
+        val packet = LenovoWatchProtocol.buildLiftToWakePacket(enabled, seq++)
         sendPacket(packet)
     }
 
