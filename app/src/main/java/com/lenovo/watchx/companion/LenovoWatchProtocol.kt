@@ -107,14 +107,14 @@ object LenovoWatchProtocol {
         return buildPacket(byteArrayOf(0x03, 0x23, sub), ACTION_TASK, seq)
     }
 
-    fun buildVibrationPacket(count: Int = 3, seq: Int): ByteArray {
-        // Channel 10 incoming call vibration with text "FIND WATCH"
-        val payload = ByteArray(4 + 10)
+    fun buildVibrationPacket(seq: Int): ByteArray {
+        // Channel 10 incoming call vibration with text "FIND" (4 bytes). Total frame = 15 bytes <= 20 bytes!
+        val txt = "FIND".toByteArray(Charsets.UTF_8)
+        val payload = ByteArray(4 + txt.size)
         payload[0] = 0x03
         payload[1] = 0x06
         payload[2] = 10.toByte() // Channel 10: Phone call ring & vibration
         payload[3] = 0xFF.toByte() // Single/final chunk
-        val txt = "FIND WATCH".toByteArray(Charsets.UTF_8)
         System.arraycopy(txt, 0, payload, 4, txt.size)
         return buildPacket(payload, ACTION_KEEP_ALIVE, seq)
     }
@@ -176,19 +176,42 @@ object LenovoWatchProtocol {
         return buildPacket(payload, ACTION_WRITE, seq)
     }
 
-    fun buildNotificationPacket(title: String, body: String, channel: Int = 7, seq: Int): ByteArray {
-        val cleanTitle = title.take(14)
-        val cleanBody = body.take(64)
-        val fullText = if (cleanTitle.isNotEmpty()) "$cleanTitle\u0000$cleanBody" else cleanBody
-        val textBytes = fullText.toByteArray(Charsets.UTF_8)
+    fun buildNotificationPackets(text: String, channel: Int = 0, startSeq: Int): List<ByteArray> {
+        val clean = text.take(64)
+        val bytes = clean.toByteArray(Charsets.UTF_8)
+        if (bytes.isEmpty()) return emptyList()
 
-        val payload = ByteArray(2 + 2 + textBytes.size)
+        val parts = (bytes.size + 8) / 9
+        val packets = mutableListOf<ByteArray>()
+        var currentSeq = startSeq
+
+        for (partIdx in 0 until parts) {
+            val start = partIdx * 9
+            val end = (start + 9).coerceAtMost(bytes.size)
+            val chunkLen = end - start
+            val isLast = (partIdx + 1 == parts)
+
+            val payload = ByteArray(4 + chunkLen)
+            payload[0] = 0x03
+            payload[1] = 0x06
+            payload[2] = channel.toByte()
+            payload[3] = if (isLast) 0xFF.toByte() else partIdx.toByte()
+            System.arraycopy(bytes, start, payload, 4, chunkLen)
+
+            packets.add(buildPacket(payload, ACTION_KEEP_ALIVE, currentSeq++))
+        }
+        return packets
+    }
+
+    fun buildNotificationPacket(title: String, body: String, channel: Int = 0, seq: Int): ByteArray {
+        val text = (if (title.isNotEmpty()) "$title: $body" else body).take(9)
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        val payload = ByteArray(4 + textBytes.size)
         payload[0] = 0x03
         payload[1] = 0x06
         payload[2] = channel.toByte()
         payload[3] = 0xFF.toByte()
         System.arraycopy(textBytes, 0, payload, 4, textBytes.size)
-
         return buildPacket(payload, ACTION_KEEP_ALIVE, seq)
     }
 

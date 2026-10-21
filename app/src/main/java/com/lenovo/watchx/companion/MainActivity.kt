@@ -195,6 +195,7 @@ class MainActivity : ComponentActivity() {
                                         onRefreshTelemetry = {
                                             service?.querySteps()
                                             service?.querySleep()
+                                            service?.queryHeartRate()
                                             Toast.makeText(this@MainActivity, "Refreshing telemetry...", Toast.LENGTH_SHORT).show()
                                         }
                                     )

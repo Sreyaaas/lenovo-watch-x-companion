@@ -491,8 +491,9 @@ class LenovoWatchBleService : Service() {
             Log.i(TAG, "onConnectionStateChange: status=$status newState=$newState device=${gatt?.device?.address}")
             try {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    Log.i(TAG, "Connected to watch. Requesting HIGH priority & discovering GATT services...")
+                    Log.i(TAG, "Connected to watch. Requesting HIGH priority, MTU & discovering GATT services...")
                     gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    gatt?.requestMtu(512)
                     startForegroundSafely()
 
                     // Android BLE best practice: 300ms delay before discoverServices
@@ -530,6 +531,10 @@ class LenovoWatchBleService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onConnectionStateChange", e)
             }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            Log.i(TAG, "onMtuChanged: mtu=$mtu status=$status")
         }
 
         @SuppressLint("MissingPermission")
@@ -853,20 +858,25 @@ class LenovoWatchBleService : Service() {
             delay(150)
 
             // 6. Query Today's Steps
-            Log.i(TAG, "Step 6/7: Querying Pedometer Steps")
+            Log.i(TAG, "Step 6/8: Querying Pedometer Steps")
             sendPacket(LenovoWatchProtocol.buildStepsQueryPacket(seq = seq++))
             delay(150)
 
             // 7. Query Sleep Data
-            Log.i(TAG, "Step 7/7: Querying Sleep Telemetry")
+            Log.i(TAG, "Step 7/8: Querying Sleep Telemetry")
             sendPacket(LenovoWatchProtocol.buildSleepQueryPacket(seq = seq++))
-            delay(500)
+            delay(300)
+
+            // 8. Query Heart Rate Telemetry
+            Log.i(TAG, "Step 8/8: Querying Heart Rate Telemetry")
+            sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq = seq++))
+            delay(300)
 
             // Lower connection priority to BALANCED to save watch battery
             Log.i(TAG, "Initialization complete. Switching to BALANCED BLE connection priority")
             bluetoothGatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
 
-            // Start periodic sync (steps & battery every 45s as keep-alive)
+            // Start periodic sync (steps, battery, and HR every 45s as keep-alive)
             startPeriodicSync()
             Log.i(TAG, "==================== WATCH X READY & ACTIVE ====================")
         }
@@ -882,6 +892,8 @@ class LenovoWatchBleService : Service() {
                     querySteps()
                     delay(300)
                     sendPacket(LenovoWatchProtocol.buildBatteryQueryPacket(seq++))
+                    delay(300)
+                    queryHeartRate()
                 }
             }
         }
@@ -901,6 +913,11 @@ class LenovoWatchBleService : Service() {
     fun querySleep() {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         sendPacket(LenovoWatchProtocol.buildSleepQueryPacket(seq++))
+    }
+
+    fun queryHeartRate() {
+        if (_connectionState.value != BleConnectionState.CONNECTED) return
+        sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
     }
 
     fun measureHeartRate() {
@@ -926,8 +943,15 @@ class LenovoWatchBleService : Service() {
 
     fun pushNotification(title: String, body: String, channel: Int = 0) {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
-        val packet = LenovoWatchProtocol.buildNotificationPacket(title, body, channel, seq++)
-        sendPacket(packet)
+        val combinedText = if (title.isNotEmpty()) "$title: $body" else body
+        serviceScope.launch {
+            val packets = LenovoWatchProtocol.buildNotificationPackets(combinedText, channel, seq)
+            seq += packets.size
+            for (pkt in packets) {
+                sendPacket(pkt)
+                delay(60)
+            }
+        }
     }
 
     fun calibrateHands(hour: Int, minute: Int) {
@@ -1039,7 +1063,7 @@ class LenovoWatchBleService : Service() {
         Log.i(TAG, "Triggering Find My Watch call vibration")
         serviceScope.launch {
             // Channel 10 phone call alert causes the watch to vibrate continuously
-            sendPacket(LenovoWatchProtocol.buildVibrationPacket(count = 3, seq = seq++))
+            sendPacket(LenovoWatchProtocol.buildVibrationPacket(seq = seq++))
             delay(4000)
             // Cancel notification to stop vibration after 4 seconds
             sendPacket(LenovoWatchProtocol.buildCancelNotificationPacket(seq = seq++))
