@@ -1,4 +1,4 @@
-# Krono Hybrid — Lenovo Watch X / Watch X Plus Companion
+# Lenovo Watch X Companion (Watch X)
 
 > A 100% local, privacy-first, zero-bloat native Android companion app for the **Lenovo Watch X** and **Watch X Plus** hybrid smartwatches.
 
@@ -13,7 +13,7 @@
 
 The official Lenovo Watch app was removed from the Google Play Store over 8 years ago. It relied on obsolete Chinese cloud servers that no longer respond and suffered from battery-draining wake locks.
 
-**Krono Hybrid** is a modern, standalone native Android app designed to completely restore and modernize your Lenovo Watch X hardware with **zero cloud dependencies, zero tracking, and zero bloat**.
+**Watch X Companion** is a clean, modern native Android app designed to completely restore your Lenovo Watch X hardware with **zero cloud dependencies, zero tracking, and zero bloat**.
 
 ---
 
@@ -55,7 +55,7 @@ The official Lenovo Watch app was removed from the Google Play Store over 8 year
 ## 📲 Download & Installation
 
 1. Go to the [**Latest Releases**](https://github.com/Sreyaaas/lenovo-watch-x-companion/releases/latest) page.
-2. Download `KronoHybrid-v1.1.0.apk`.
+2. Download `WatchX-v1.2.0.apk`.
 3. Open the APK on your Android device and tap **Install**.
 4. Grant Bluetooth and Notification permissions when prompted.
 5. Tap **Connect Watch** to scan for your `Watch X` and pair!

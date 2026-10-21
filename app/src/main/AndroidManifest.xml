@@ -22,7 +22,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Theme.WatchX">
 
         <activity
             android:name=".MainActivity"
@@ -34,7 +34,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Background Persistent BLE Communication Service -->
+        <!-- BLE Companion Service -->
         <service
             android:name=".LenovoWatchBleService"
             android:foregroundServiceType="connectedDevice"

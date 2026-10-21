@@ -49,12 +49,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestPermissionsIfNeeded()
 
-        // Start background BLE companion service
-        val serviceIntent = Intent(this, LenovoWatchBleService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
+        // Safely start BLE companion service without aggressive foreground requirements
+        try {
+            val serviceIntent = Intent(this, LenovoWatchBleService::class.java)
             startService(serviceIntent)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to start BLE service safely", e)
         }
 
         setContent {
@@ -74,11 +74,11 @@ class MainActivity : ComponentActivity() {
             var selectedTab by remember { mutableStateOf(AppNavTab.ACTIVITY) }
             var showScanDialog by remember { mutableStateOf(false) }
 
-            KronoTheme {
+            WatchXTheme {
                 Scaffold(
                     containerColor = Color(0xFF090D16),
                     bottomBar = {
-                        KronoBottomBar(
+                        WatchXBottomBar(
                             currentTab = selectedTab,
                             onTabSelected = { selectedTab = it }
                         )
@@ -250,14 +250,14 @@ fun WatchHeaderCard(
             ) {
                 Column {
                     Text(
-                        text = "KRONO HYBRID",
+                        text = "LENOVO WATCH X",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
                         letterSpacing = 1.sp
                     )
                     Text(
-                        text = "Lenovo Watch X Series",
+                        text = "Hybrid Smartwatch Companion",
                         fontSize = 11.sp,
                         color = Color(0xFF64748B)
                     )
@@ -1177,7 +1177,7 @@ fun DeviceSettingsTab(
 /* ========================================================================= */
 
 @Composable
-fun KronoBottomBar(
+fun WatchXBottomBar(
     currentTab: AppNavTab,
     onTabSelected: (AppNavTab) -> Unit
 ) {
@@ -1292,7 +1292,7 @@ fun FindPhoneModal(onDismiss: () -> Unit) {
 }
 
 @Composable
-fun KronoTheme(content: @Composable () -> Unit) {
+fun WatchXTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             background = Color(0xFF090D16),

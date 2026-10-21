@@ -4,22 +4,7 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Deep Midnight Slate Background -->
     <path
-        android:fillColor="#0B0F19"
+        android:fillColor="#0A0E1A"
         android:pathData="M0,0h108v108h-108z" />
-
-    <!-- Subtle Concentric Chronograph Rings -->
-    <path
-        android:strokeColor="#1E293B"
-        android:strokeWidth="1"
-        android:pathData="M 54, 54 m -46, 0 a 46,46 0 1,0 92,0 a 46,46 0 1,0 -92,0" />
-    <path
-        android:strokeColor="#151E2E"
-        android:strokeWidth="1"
-        android:pathData="M 54, 54 m -38, 0 a 38,38 0 1,0 76,0 a 38,38 0 1,0 -76,0" />
-    <path
-        android:strokeColor="#1E293B"
-        android:strokeWidth="0.5"
-        android:pathData="M 54, 54 m -28, 0 a 28,28 0 1,0 56,0 a 28,28 0 1,0 -56,0" />
 </vector>
