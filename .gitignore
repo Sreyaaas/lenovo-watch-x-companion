@@ -17,3 +17,4 @@ captures
 *.aab
 build-output-apk/
 *.zip
+*.ps1

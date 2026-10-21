@@ -139,6 +139,17 @@ class LenovoWatchBleService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundSafely()
+        if (hasConnectPermission()) {
+            val lastMac = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_MAC, null)
+            if (!lastMac.isNullOrEmpty() && _connectionState.value == BleConnectionState.DISCONNECTED) {
+                connect(lastMac)
+            }
+        }
+        return START_STICKY
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -199,9 +210,10 @@ class LenovoWatchBleService : Service() {
                 manager?.createNotificationChannel(channel)
             }
 
+            val isConnected = _connectionState.value == BleConnectionState.CONNECTED
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Watch X")
-                .setContentText("Connected to Lenovo Watch X")
+                .setContentText(if (isConnected) "Connected to Lenovo Watch X" else "Monitoring Lenovo Watch X")
                 .setSmallIcon(R.drawable.ic_stat_watch)
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -311,8 +323,19 @@ class LenovoWatchBleService : Service() {
 
                 val current = discoveredDevices.value.toMutableList()
                 if (current.none { it.second == address }) {
-                    current.add(Pair(name, address))
+                    current.add(Pair(if (name.isNotEmpty()) name else "Watch X", address))
                     discoveredDevices.value = current
+                }
+
+                // Auto connect to Watch X if detected while scanning
+                val isWatchX = name.contains("Watch X", ignoreCase = true) ||
+                        name.contains("Lenovo", ignoreCase = true) ||
+                        address.endsWith(":7D:7D", ignoreCase = true) ||
+                        result?.scanRecord?.serviceUuids?.any { it.uuid == LenovoWatchProtocol.UUID_SERVICE } == true
+
+                if (_connectionState.value == BleConnectionState.SCANNING && isWatchX) {
+                    Log.i(TAG, "Found target watch '$name' ($address)! Auto-connecting...")
+                    connect(address)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onScanResult", e)

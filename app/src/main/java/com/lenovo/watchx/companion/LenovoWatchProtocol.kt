@@ -236,14 +236,14 @@ object LenovoWatchProtocol {
     }
 
     fun parseIncomingPacket(buf: ByteArray): WatchResponse? {
-        if (buf.size < 6 || buf[0] != HEADER_MAGIC) return null
+        if (buf.size < 3) return null
 
         // Battery: CMD 0x01, 0x14
         for (i in 0 until buf.size - 3) {
             if (buf[i] == 0x01.toByte() && buf[i + 1] == 0x14.toByte()) {
                 val isNormal = buf.getOrNull(i + 2) == 0x01.toByte()
                 val level = (buf.getOrNull(i + 3)?.toInt() ?: 85) and 0xFF
-                return WatchResponse.Battery(level, isNormal)
+                return WatchResponse.Battery(level.coerceIn(0, 100), isNormal)
             }
         }
 
@@ -257,12 +257,19 @@ object LenovoWatchProtocol {
             }
         }
 
-        // Steps: CMD 0x10, 0x03
-        for (i in 0 until buf.size - 3) {
-            if (buf[i] == 0x10.toByte() && buf[i + 1] == 0x03.toByte()) {
-                val high = (buf.getOrNull(i + 2)?.toInt() ?: 0) and 0xFF
-                val low = (buf.getOrNull(i + 3)?.toInt() ?: 0) and 0xFF
-                val steps = (high shl 8) or low
+        // Steps: CMD 0x10, 0x03 or 0x10, 0x01
+        for (i in 0 until buf.size - 2) {
+            if (buf[i] == 0x10.toByte() && (buf[i + 1] == 0x03.toByte() || buf[i + 1] == 0x01.toByte())) {
+                val b0 = (buf.getOrNull(i + 2)?.toInt() ?: 0) and 0xFF
+                val b1 = (buf.getOrNull(i + 3)?.toInt() ?: 0) and 0xFF
+                val b2 = (buf.getOrNull(i + 4)?.toInt() ?: 0) and 0xFF
+                val steps = if (i + 4 < buf.size && b0 == 0) {
+                    (b1 shl 8) or b2
+                } else if (i + 3 < buf.size) {
+                    (b0 shl 8) or b1
+                } else {
+                    b0
+                }
                 return WatchResponse.Steps(steps)
             }
         }
@@ -271,7 +278,9 @@ object LenovoWatchProtocol {
         for (i in 0 until buf.size - 2) {
             if (buf[i] == 0x15.toByte() && buf[i + 1] == 0x03.toByte()) {
                 val bpm = (buf.getOrNull(i + 2)?.toInt() ?: 70) and 0xFF
-                return WatchResponse.HeartRate(bpm)
+                if (bpm in 30..220) {
+                    return WatchResponse.HeartRate(bpm)
+                }
             }
         }
 

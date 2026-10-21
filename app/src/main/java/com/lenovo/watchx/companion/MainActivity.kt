@@ -1,10 +1,14 @@
 package com.lenovo.watchx.companion
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -69,19 +73,46 @@ enum class AppNavTab(val label: String, val icon: ImageVector) {
 
 class MainActivity : ComponentActivity() {
 
+    private val bleServiceState = mutableStateOf<LenovoWatchBleService?>(null)
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            if (binder is LenovoWatchBleService.LocalBinder) {
+                bleServiceState.value = binder.getService()
+            }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            bleServiceState.value = null
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestPermissionsIfNeeded()
 
         try {
             val serviceIntent = Intent(this, LenovoWatchBleService::class.java)
-            startService(serviceIntent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
         } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "Failed to start BLE service safely", e)
+            android.util.Log.e("MainActivity", "Failed to start/bind BLE service safely", e)
         }
 
         setContent {
-            val service = LenovoWatchBleService.instance
+            val service by bleServiceState
+
+            // Automatically start BLE scanning if watch is not connected
+            LaunchedEffect(service) {
+                val s = service ?: return@LaunchedEffect
+                if (s.connectionState.value == BleConnectionState.DISCONNECTED) {
+                    s.startScan()
+                }
+            }
 
             val connState by (service?.connectionState?.collectAsState() ?: remember { mutableStateOf(BleConnectionState.DISCONNECTED) })
             val battery by (service?.batteryLevel?.collectAsState() ?: remember { mutableStateOf(85) })
@@ -270,6 +301,15 @@ class MainActivity : ComponentActivity() {
         }
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 101)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            unbindService(serviceConnection)
+        } catch (e: Exception) {
+            // Ignore unbind if not registered
         }
     }
 }
