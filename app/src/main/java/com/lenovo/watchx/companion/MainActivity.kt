@@ -455,8 +455,10 @@ fun ActivityTab(
                                 fontFamily = FontFamily.Monospace,
                                 color = Color.White
                             )
+                            val goalFormatted = String.format("%,d", stepGoal)
+                            val progressPct = (progress * 100).toInt()
                             Text(
-                                text = "Goal: %,d steps (${(progress * 100).toInt()}%)".format(stepGoal),
+                                text = "Goal: $goalFormatted steps ($progressPct%)",
                                 fontSize = 12.sp,
                                 color = Color(0xFF94A3B8)
                             )
