@@ -89,19 +89,19 @@ class LenovoWatchBleService : Service() {
     private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
     val connectionState: StateFlow<BleConnectionState> = _connectionState.asStateFlow()
 
-    private val _batteryLevel = MutableStateFlow(85)
+    private val _batteryLevel = MutableStateFlow(0)
     val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
 
-    private val _firmwareVersion = MutableStateFlow("1.2.8")
+    private val _firmwareVersion = MutableStateFlow("")
     val firmwareVersion: StateFlow<String> = _firmwareVersion.asStateFlow()
 
-    private val _todaySteps = MutableStateFlow(6420)
+    private val _todaySteps = MutableStateFlow(0)
     val todaySteps: StateFlow<Int> = _todaySteps.asStateFlow()
 
     private val _stepGoal = MutableStateFlow(10000)
     val stepGoal: StateFlow<Int> = _stepGoal.asStateFlow()
 
-    private val _heartRateBpm = MutableStateFlow(72)
+    private val _heartRateBpm = MutableStateFlow(0)
     val heartRateBpm: StateFlow<Int> = _heartRateBpm.asStateFlow()
 
     private val _isMeasuringHr = MutableStateFlow(false)
@@ -832,17 +832,15 @@ class LenovoWatchBleService : Service() {
             sendPacket(LenovoWatchProtocol.buildSetTimePacket(seq = seq++))
             delay(150)
 
-            // Push saved user preferences
-            sendPacket(LenovoWatchProtocol.buildTimeFormatPacket(_is24Hour.value, seq++))
-            delay(100)
+            // Push saved user preferences using real Watch X commands
+            sendPacket(LenovoWatchProtocol.buildTimeAndLanguagePacket(_isEnglish.value, _is24Hour.value, seq++))
+            delay(120)
             sendPacket(LenovoWatchProtocol.buildUnitPacket(_isMetric.value, seq++))
-            delay(100)
-            sendPacket(LenovoWatchProtocol.buildLanguagePacket(_isEnglish.value, seq++))
-            delay(100)
+            delay(120)
             sendPacket(LenovoWatchProtocol.buildLiftToWakePacket(_tiltEnabled.value, seq++))
-            delay(100)
+            delay(120)
             sendPacket(LenovoWatchProtocol.buildDndPacket(_dndEnabled.value, seq++))
-            delay(100)
+            delay(120)
 
             // 4. Query Firmware Version
             Log.i(TAG, "Step 4/7: Querying Firmware Version")
@@ -909,21 +907,24 @@ class LenovoWatchBleService : Service() {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         _isMeasuringHr.value = true
         Log.i(TAG, "Starting optical PPG heart rate measurement")
-        // Start green optical sensor on watch
-        sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = true, seq = seq++))
-        // Query stored HR reading as well
-        sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
-
         serviceScope.launch {
-            // Keep sensor sampling for 20 seconds
+            // Start green optical sensor (CMD_HEART_RATE_MEASURE: 0x03, 0x23, 0x01)
+            sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = true, seq = seq++))
+            delay(500)
+            // Query stored HR reading as well
+            sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
+
+            // Keep sensor active for 20 seconds
             delay(20_000)
             _isMeasuringHr.value = false
-            // Turn off optical sensor LEDs to conserve battery
+            // Turn off optical sensor LEDs
             sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = false, seq = seq++))
+            delay(300)
+            sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
         }
     }
 
-    fun pushNotification(title: String, body: String, channel: Int = 7) {
+    fun pushNotification(title: String, body: String, channel: Int = 0) {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         val packet = LenovoWatchProtocol.buildNotificationPacket(title, body, channel, seq++)
         sendPacket(packet)
@@ -932,26 +933,29 @@ class LenovoWatchBleService : Service() {
     fun calibrateHands(hour: Int, minute: Int) {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         serviceScope.launch {
-            Log.i(TAG, "Calibrating mechanical hands to $hour:$minute")
+            Log.i(TAG, "Calibrating mechanical hands with position $hour:$minute")
             // 1. Enter calibration mode
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x31, 0x01), LenovoWatchProtocol.ACTION_TASK, seq++))
             delay(200)
-            // 2. Keep-alive
+
+            // 2. Keep calibration alive
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x34), LenovoWatchProtocol.ACTION_KEEP_ALIVE, seq++))
             delay(150)
-            // 3. Hour hand motor 1 position
-            val hourSec = ((hour % 12) * 60 + minute) * 60
-            sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x33, 0x01, ((hourSec shr 8) and 0xFF).toByte(), (hourSec and 0xFF).toByte()), LenovoWatchProtocol.ACTION_TASK, seq++))
-            delay(250)
-            // 4. Minute hand motor 2 position
-            val minSec = (minute % 60) * 60
-            sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x33, 0x02, ((minSec shr 8) and 0xFF).toByte(), (minSec and 0xFF).toByte()), LenovoWatchProtocol.ACTION_TASK, seq++))
+
+            // 3. Send physical hand positions (total seconds)
+            val pos = ((hour % 12) * 60 + minute) * 60
+            val high = ((pos shr 8) and 0xFF).toByte()
+            val low = (pos and 0xFF).toByte()
+            sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x33, 0x01, high, low), LenovoWatchProtocol.ACTION_TASK, seq++))
+            delay(400)
+
+            // 4. Send atomic time so watch calculates delta angle and spins motors to current time
+            syncTime()
             delay(300)
+
             // 5. Exit calibration mode
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x31, 0x00), LenovoWatchProtocol.ACTION_TASK, seq++))
-            delay(200)
-            // 6. Push real time so the watch calculates delta steps and rotates hands into place!
-            syncTime()
+            Log.i(TAG, "Calibration mode completed")
         }
     }
 
@@ -981,7 +985,7 @@ class LenovoWatchBleService : Service() {
         _is24Hour.value = is24Hour
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_24HOUR, is24Hour).apply()
         if (_connectionState.value == BleConnectionState.CONNECTED) {
-            sendPacket(LenovoWatchProtocol.buildTimeFormatPacket(is24Hour, seq++))
+            sendPacket(LenovoWatchProtocol.buildTimeAndLanguagePacket(_isEnglish.value, is24Hour, seq++))
         }
     }
 
@@ -997,7 +1001,7 @@ class LenovoWatchBleService : Service() {
         _isEnglish.value = isEnglish
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_ENGLISH, isEnglish).apply()
         if (_connectionState.value == BleConnectionState.CONNECTED) {
-            sendPacket(LenovoWatchProtocol.buildLanguagePacket(isEnglish, seq++))
+            sendPacket(LenovoWatchProtocol.buildTimeAndLanguagePacket(isEnglish, _is24Hour.value, seq++))
         }
     }
 
@@ -1032,9 +1036,14 @@ class LenovoWatchBleService : Service() {
 
     fun findMyWatch() {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
-        Log.i(TAG, "Triggering Find My Watch vibration motor pulse")
-        sendPacket(LenovoWatchProtocol.buildVibrationPacket(count = 3, seq = seq++))
-        pushNotification("FIND WATCH", "Vibrating...", 1024)
+        Log.i(TAG, "Triggering Find My Watch call vibration")
+        serviceScope.launch {
+            // Channel 10 phone call alert causes the watch to vibrate continuously
+            sendPacket(LenovoWatchProtocol.buildVibrationPacket(count = 3, seq = seq++))
+            delay(4000)
+            // Cancel notification to stop vibration after 4 seconds
+            sendPacket(LenovoWatchProtocol.buildCancelNotificationPacket(seq = seq++))
+        }
     }
 
     private fun triggerFindPhoneAlarm() {

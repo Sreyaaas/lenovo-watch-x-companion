@@ -104,11 +104,24 @@ object LenovoWatchProtocol {
 
     fun buildHeartRateMeasurementPacket(start: Boolean, seq: Int): ByteArray {
         val sub = if (start) 0x01.toByte() else 0x00.toByte()
-        return buildPacket(byteArrayOf(0x03, 0x04, sub), ACTION_TASK, seq)
+        return buildPacket(byteArrayOf(0x03, 0x23, sub), ACTION_TASK, seq)
     }
 
     fun buildVibrationPacket(count: Int = 3, seq: Int): ByteArray {
-        return buildPacket(byteArrayOf(0x03, 0x05, count.toByte()), ACTION_TASK, seq)
+        // Channel 10 incoming call vibration with text "FIND WATCH"
+        val payload = ByteArray(4 + 10)
+        payload[0] = 0x03
+        payload[1] = 0x06
+        payload[2] = 10.toByte() // Channel 10: Phone call ring & vibration
+        payload[3] = 0xFF.toByte() // Single/final chunk
+        val txt = "FIND WATCH".toByteArray(Charsets.UTF_8)
+        System.arraycopy(txt, 0, payload, 4, txt.size)
+        return buildPacket(payload, ACTION_KEEP_ALIVE, seq)
+    }
+
+    fun buildCancelNotificationPacket(seq: Int): ByteArray {
+        val payload = byteArrayOf(0x03, 0x04, 0x00, 0x00, 0x04, 0x00, 0x00, 0xFF.toByte())
+        return buildPacket(payload, ACTION_WRITE, seq)
     }
 
     fun buildSleepQueryPacket(seq: Int): ByteArray {
@@ -126,7 +139,14 @@ object LenovoWatchProtocol {
     }
 
     fun buildLiftToWakePacket(enabled: Boolean, seq: Int): ByteArray {
-        return buildPacket(byteArrayOf(0x03, 0x22, if (enabled) 0x01 else 0x00), ACTION_WRITE, seq)
+        val payload = byteArrayOf(
+            0x03, 0x92.toByte(),
+            0x00,
+            0x00,
+            0x00,
+            if (enabled) 0x01 else 0x00
+        )
+        return buildPacket(payload, ACTION_WRITE, seq)
     }
 
     fun buildSetTimePacket(calendar: Calendar = Calendar.getInstance(), seq: Int): ByteArray {
@@ -139,7 +159,7 @@ object LenovoWatchProtocol {
         val tzMin = (calendar.get(Calendar.ZONE_OFFSET) + calendar.get(Calendar.DST_OFFSET)) / (60 * 1000)
         val tzHours = tzMin / 60
         val tzIndMin = Math.round((Math.abs(tzMin) % 60) * 100f / 60f)
-        val dayOfWeek = (calendar.get(Calendar.DAY_OF_WEEK) + 5) % 7 // Mon=0..Sun=6
+        val dayOfWeek = calendar.get(Calendar.DAY_OF_WEEK) - 1 // Sunday=0..Saturday=6
 
         val payload = byteArrayOf(
             0x01, 0x08,
@@ -212,28 +232,31 @@ object LenovoWatchProtocol {
         return buildPacket(payload, ACTION_WRITE, seq)
     }
 
-    fun buildTimeFormatPacket(is24Hour: Boolean, seq: Int): ByteArray {
+    fun buildTimeAndLanguagePacket(isEnglish: Boolean, is24Hour: Boolean, seq: Int): ByteArray {
         val payload = byteArrayOf(
-            0x01, 0x0C,
-            if (is24Hour) 0x01 else 0x00
+            0x03, 0x91.toByte(),
+            if (isEnglish) 0x01 else 0x00,
+            if (is24Hour) 0x00 else 0x01
         )
         return buildPacket(payload, ACTION_WRITE, seq)
+    }
+
+    fun buildTimeFormatPacket(is24Hour: Boolean, isEnglish: Boolean = true, seq: Int): ByteArray {
+        return buildTimeAndLanguagePacket(isEnglish, is24Hour, seq)
     }
 
     fun buildUnitPacket(isMetric: Boolean, seq: Int): ByteArray {
         val payload = byteArrayOf(
-            0x01, 0x0D,
-            if (isMetric) 0x00 else 0x01
+            0x03, 0x93.toByte(),
+            if (isMetric) 0x00 else 0x01,
+            0x00,
+            0x00
         )
         return buildPacket(payload, ACTION_WRITE, seq)
     }
 
-    fun buildLanguagePacket(isEnglish: Boolean, seq: Int): ByteArray {
-        val payload = byteArrayOf(
-            0x01, 0x0E,
-            if (isEnglish) 0x01 else 0x00
-        )
-        return buildPacket(payload, ACTION_WRITE, seq)
+    fun buildLanguagePacket(isEnglish: Boolean, is24Hour: Boolean = true, seq: Int): ByteArray {
+        return buildTimeAndLanguagePacket(isEnglish, is24Hour, seq)
     }
 
     fun buildCameraShutterModePacket(enabled: Boolean, seq: Int): ByteArray {
@@ -283,30 +306,44 @@ object LenovoWatchProtocol {
             }
         }
 
-        // Heart rate: 0x15, 0x03 or 0x03, 0x04 or 0x15, 0x01
+        // 0xF0, 0x10 records (Sleep vs Heart Rate)
+        for (i in 0 until buf.size - 4) {
+            if (buf[i] == 0xF0.toByte() && buf[i + 1] == 0x10.toByte()) {
+                val subTypeHigh = (buf.getOrNull(i + 2)?.toInt() ?: 0) and 0xFF
+                val subTypeLow = (buf.getOrNull(i + 3)?.toInt() ?: 0) and 0xFF
+                val subType = (subTypeHigh shl 8) or subTypeLow
+                if (subType == 0x02) {
+                    // Heart Rate record! Look for latest valid reading
+                    for (k in buf.size - 2 downTo i + 4) {
+                        val bpm = buf[k].toInt() and 0xFF
+                        if (bpm in 35..220) {
+                            return WatchResponse.HeartRate(bpm)
+                        }
+                    }
+                } else if (subType == 0x01) {
+                    // Sleep record!
+                    val deepHigh = (buf.getOrNull(i + 4)?.toInt() ?: 0) and 0xFF
+                    val deepLow = (buf.getOrNull(i + 5)?.toInt() ?: 0) and 0xFF
+                    val deep = (deepHigh shl 8) or deepLow
+
+                    val lightHigh = (buf.getOrNull(i + 6)?.toInt() ?: 0) and 0xFF
+                    val lightLow = (buf.getOrNull(i + 7)?.toInt() ?: 0) and 0xFF
+                    val light = if (i + 7 < buf.size) ((lightHigh shl 8) or lightLow) else 240
+                    val awake = 35
+                    return WatchResponse.Sleep(deep + light + awake, deep, light, awake)
+                }
+            }
+        }
+
+        // Live Heart Rate: 0x80, 0x15, 0x03 or 0x15, 0x03 or 0x03, 0x23
         for (i in 0 until buf.size - 2) {
             val isHrCmd = (buf[i] == 0x15.toByte() && (buf[i + 1] == 0x03.toByte() || buf[i + 1] == 0x01.toByte())) ||
-                    (buf[i] == 0x03.toByte() && buf[i + 1] == 0x04.toByte())
+                    (buf[i] == 0x03.toByte() && buf[i + 1] == 0x23.toByte())
             if (isHrCmd) {
                 val bpm = (buf.getOrNull(i + 2)?.toInt() ?: 0) and 0xFF
                 if (bpm in 35..220) {
                     return WatchResponse.HeartRate(bpm)
                 }
-            }
-        }
-
-        // Sleep: 0xF0, 0x10
-        for (i in 0 until buf.size - 4) {
-            if (buf[i] == 0xF0.toByte() && buf[i + 1] == 0x10.toByte()) {
-                val deepHigh = (buf.getOrNull(i + 2)?.toInt() ?: 0) and 0xFF
-                val deepLow = (buf.getOrNull(i + 3)?.toInt() ?: 0) and 0xFF
-                val deep = (deepHigh shl 8) or deepLow
-
-                val lightHigh = (buf.getOrNull(i + 4)?.toInt() ?: 0) and 0xFF
-                val lightLow = (buf.getOrNull(i + 5)?.toInt() ?: 0) and 0xFF
-                val light = if (i + 5 < buf.size) ((lightHigh shl 8) or lightLow) else 240
-                val awake = 35
-                return WatchResponse.Sleep(deep + light + awake, deep, light, awake)
             }
         }
 

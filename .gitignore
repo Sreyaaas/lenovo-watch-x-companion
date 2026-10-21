@@ -18,3 +18,4 @@ captures
 build-output-apk/
 *.zip
 *.ps1
+*.diff

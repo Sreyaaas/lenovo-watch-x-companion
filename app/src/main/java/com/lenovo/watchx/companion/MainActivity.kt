@@ -115,11 +115,11 @@ class MainActivity : ComponentActivity() {
             }
 
             val connState by (service?.connectionState?.collectAsState() ?: remember { mutableStateOf(BleConnectionState.DISCONNECTED) })
-            val battery by (service?.batteryLevel?.collectAsState() ?: remember { mutableStateOf(85) })
-            val firmware by (service?.firmwareVersion?.collectAsState() ?: remember { mutableStateOf("1.2.8") })
-            val steps by (service?.todaySteps?.collectAsState() ?: remember { mutableStateOf(6420) })
+            val battery by (service?.batteryLevel?.collectAsState() ?: remember { mutableStateOf(0) })
+            val firmware by (service?.firmwareVersion?.collectAsState() ?: remember { mutableStateOf("") })
+            val steps by (service?.todaySteps?.collectAsState() ?: remember { mutableStateOf(0) })
             val stepGoal by (service?.stepGoal?.collectAsState() ?: remember { mutableStateOf(10000) })
-            val heartRate by (service?.heartRateBpm?.collectAsState() ?: remember { mutableStateOf(72) })
+            val heartRate by (service?.heartRateBpm?.collectAsState() ?: remember { mutableStateOf(0) })
             val isMeasuringHr by (service?.isMeasuringHr?.collectAsState() ?: remember { mutableStateOf(false) })
             val sleepData by (service?.sleepSession?.collectAsState() ?: remember { mutableStateOf(SleepSession()) })
             val findPhoneActive by (service?.findPhoneTrigger?.collectAsState() ?: remember { mutableStateOf(false) })
@@ -423,7 +423,7 @@ fun AppleHeroWatchHeader(
                                 modifier = Modifier.size(13.dp)
                             )
                             Text(
-                                text = "$battery%",
+                                text = if (battery > 0) "$battery%" else "--%",
                                 fontSize = 12.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = AppleTheme.TextSecondary
@@ -628,7 +628,7 @@ fun AppleSummaryTab(
 
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
-                                text = "$heartRate",
+                                text = if (heartRate > 0) "$heartRate" else "--",
                                 fontSize = 28.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = AppleTheme.TextPrimary
@@ -828,7 +828,7 @@ fun AppleFitnessDetailTab(
                         }
 
                         Text(
-                            text = "$heartRate BPM",
+                            text = if (heartRate > 0) "$heartRate BPM" else "-- BPM",
                             fontSize = 20.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = AppleTheme.CardioPink
