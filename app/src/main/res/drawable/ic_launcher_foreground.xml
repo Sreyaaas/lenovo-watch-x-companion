@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer Stainless Steel Watch Bezel -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="2.5"
+        android:pathData="M 54, 54 m -34, 0 a 34,34 0 1,0 68,0 a 34,34 0 1,0 -68,0" />
+
+    <!-- Inner Dial Edge -->
+    <path
+        android:strokeColor="#1E293B"
+        android:strokeWidth="1.5"
+        android:pathData="M 54, 54 m -31, 0 a 31,31 0 1,0 62,0 a 31,31 0 1,0 -62,0" />
+
+    <!-- 12 O'Clock Marker (Cyan Accent) -->
+    <path
+        android:fillColor="#00F0FF"
+        android:pathData="M52.5,24h3v6h-3z" />
+
+    <!-- 3 O'Clock Marker -->
+    <path
+        android:fillColor="#94A3B8"
+        android:pathData="M78,52.5h6v3h-6z" />
+
+    <!-- 9 O'Clock Marker -->
+    <path
+        android:fillColor="#94A3B8"
+        android:pathData="M24,52.5h6v3h-6z" />
+
+    <!-- Sub-dial 96x32 OLED Display Pill at 6 o'clock -->
+    <path
+        android:fillColor="#020617"
+        android:strokeColor="#10B981"
+        android:strokeWidth="1.2"
+        android:pathData="M42,67 h24 a4,4 0 0 1 4,4 v4 a4,4 0 0 1 -4,4 h-24 a4,4 0 0 1 -4,-4 v-4 a4,4 0 0 1 4,-4 z" />
+
+    <!-- OLED Screen Glowing Content Dash -->
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M46,73h16v1.5h-16z" />
+
+    <!-- Hour Hand (10:10 Luxury Position - points toward 10 o'clock) -->
+    <!-- Center (54, 54) to (38, 38) -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M54,54 L39,40" />
+
+    <!-- Minute Hand (points toward 2 o'clock) -->
+    <!-- Center (54, 54) to (71, 38) -->
+    <path
+        android:strokeColor="#00F0FF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M54,54 L71,38" />
+
+    <!-- Center Pivot Jewel -->
+    <path
+        android:fillColor="#00F0FF"
+        android:pathData="M 54, 54 m -4, 0 a 4,4 0 1,0 8,0 a 4,4 0 1,0 -8,0" />
+    <path
+        android:fillColor="#0B0F19"
+        android:pathData="M 54, 54 m -1.5, 0 a 1.5,1.5 0 1,0 3,0 a 1.5,1.5 0 1,0 -3,0" />
+
+</vector>
