@@ -942,31 +942,42 @@ fun AppleCalibrationTab(
                     // Stepper Buttons
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Button(
-                            onClick = { hour = (hour + 11) % 12 },
+                            onClick = { hour = if (hour <= 1) 12 else hour - 1 },
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
-                            shape = RoundedCornerShape(10.dp)
-                        ) { Text("-1h", color = Color.White) }
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("-1h", color = Color.White, fontSize = 12.sp) }
 
                         Button(
-                            onClick = { hour = (hour + 1) % 12 },
+                            onClick = { hour = if (hour >= 12) 1 else hour + 1 },
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
-                            shape = RoundedCornerShape(10.dp)
-                        ) { Text("+1h", color = Color.White) }
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("+1h", color = Color.White, fontSize = 12.sp) }
 
                         Button(
-                            onClick = { minute = (minute + 55) % 60 },
+                            onClick = { minute = (minute + 59) % 60 },
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
-                            shape = RoundedCornerShape(10.dp)
-                        ) { Text("-5m", color = Color.White) }
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("-1m", color = Color.White, fontSize = 12.sp) }
+
+                        Button(
+                            onClick = { minute = (minute + 1) % 60 },
+                            colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("+1m", color = Color.White, fontSize = 12.sp) }
 
                         Button(
                             onClick = { minute = (minute + 5) % 60 },
                             colors = ButtonDefaults.buttonColors(containerColor = AppleTheme.InsetDark),
-                            shape = RoundedCornerShape(10.dp)
-                        ) { Text("+5m", color = Color.White) }
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) { Text("+5m", color = Color.White, fontSize = 12.sp) }
                     }
 
                     Button(

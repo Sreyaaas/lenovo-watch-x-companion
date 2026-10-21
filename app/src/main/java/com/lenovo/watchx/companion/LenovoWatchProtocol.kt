@@ -102,6 +102,15 @@ object LenovoWatchProtocol {
         return buildPacket(byteArrayOf(0xF0.toByte(), 0x10, 0x00, 0x02), ACTION_READ, seq)
     }
 
+    fun buildHeartRateMeasurementPacket(start: Boolean, seq: Int): ByteArray {
+        val sub = if (start) 0x01.toByte() else 0x00.toByte()
+        return buildPacket(byteArrayOf(0x03, 0x04, sub), ACTION_TASK, seq)
+    }
+
+    fun buildVibrationPacket(count: Int = 3, seq: Int): ByteArray {
+        return buildPacket(byteArrayOf(0x03, 0x05, count.toByte()), ACTION_TASK, seq)
+    }
+
     fun buildSleepQueryPacket(seq: Int): ByteArray {
         return buildPacket(byteArrayOf(0xF0.toByte(), 0x10, 0x00, 0x01), ACTION_READ, seq)
     }
@@ -274,11 +283,13 @@ object LenovoWatchProtocol {
             }
         }
 
-        // Heart rate: 0x15, 0x03
+        // Heart rate: 0x15, 0x03 or 0x03, 0x04 or 0x15, 0x01
         for (i in 0 until buf.size - 2) {
-            if (buf[i] == 0x15.toByte() && buf[i + 1] == 0x03.toByte()) {
-                val bpm = (buf.getOrNull(i + 2)?.toInt() ?: 70) and 0xFF
-                if (bpm in 30..220) {
+            val isHrCmd = (buf[i] == 0x15.toByte() && (buf[i + 1] == 0x03.toByte() || buf[i + 1] == 0x01.toByte())) ||
+                    (buf[i] == 0x03.toByte() && buf[i + 1] == 0x04.toByte())
+            if (isHrCmd) {
+                val bpm = (buf.getOrNull(i + 2)?.toInt() ?: 0) and 0xFF
+                if (bpm in 35..220) {
                     return WatchResponse.HeartRate(bpm)
                 }
             }

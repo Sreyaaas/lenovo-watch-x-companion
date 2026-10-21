@@ -11,8 +11,10 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.RingtoneManager
@@ -54,6 +56,13 @@ class LenovoWatchBleService : Service() {
         const val NOTIFICATION_ID = 2001
         const val PREFS_NAME = "watchx_prefs"
         const val KEY_LAST_MAC = "last_connected_mac"
+        const val KEY_24HOUR = "pref_24hour"
+        const val KEY_METRIC = "pref_metric"
+        const val KEY_ENGLISH = "pref_english"
+        const val KEY_SEDENTARY = "pref_sedentary"
+        const val KEY_DRINK_WATER = "pref_drink_water"
+        const val KEY_DND = "pref_dnd"
+        const val KEY_TILT = "pref_tilt"
 
         var instance: LenovoWatchBleService? = null
             private set
@@ -150,6 +159,28 @@ class LenovoWatchBleService : Service() {
         return START_STICKY
     }
 
+    private val btStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                if (state == BluetoothAdapter.STATE_TURNING_OFF || state == BluetoothAdapter.STATE_OFF) {
+                    Log.w(TAG, "Bluetooth turned OFF by system")
+                    handleDeadGatt("Bluetooth turned off")
+                } else if (state == BluetoothAdapter.STATE_ON) {
+                    Log.i(TAG, "Bluetooth turned ON, re-initializing adapter and reconnecting...")
+                    bluetoothAdapter = bluetoothManager?.adapter
+                    serviceScope.launch {
+                        delay(1000)
+                        val lastMac = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_MAC, null)
+                        if (!lastMac.isNullOrEmpty()) {
+                            connect(lastMac)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -158,6 +189,21 @@ class LenovoWatchBleService : Service() {
             bluetoothAdapter = bluetoothManager?.adapter
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize Bluetooth adapter", e)
+        }
+
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        _is24Hour.value = prefs.getBoolean(KEY_24HOUR, true)
+        _isMetric.value = prefs.getBoolean(KEY_METRIC, true)
+        _isEnglish.value = prefs.getBoolean(KEY_ENGLISH, true)
+        _sedentaryEnabled.value = prefs.getBoolean(KEY_SEDENTARY, false)
+        _drinkWaterEnabled.value = prefs.getBoolean(KEY_DRINK_WATER, false)
+        _dndEnabled.value = prefs.getBoolean(KEY_DND, false)
+        _tiltEnabled.value = prefs.getBoolean(KEY_TILT, true)
+
+        try {
+            registerReceiver(btStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register btStateReceiver", e)
         }
 
         // Try auto-reconnect if permissions allow
@@ -172,6 +218,9 @@ class LenovoWatchBleService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        try {
+            unregisterReceiver(btStateReceiver)
+        } catch (e: Exception) {}
         periodicSyncJob?.cancel()
         initializationJob?.cancel()
         queueWorkerJob?.cancel()
@@ -408,6 +457,34 @@ class LenovoWatchBleService : Service() {
         }
     }
 
+    @Synchronized
+    private fun handleDeadGatt(reason: String) {
+        Log.w(TAG, "Handling dead GATT connection ($reason). Resetting...")
+        periodicSyncJob?.cancel()
+        periodicSyncJob = null
+        initializationJob?.cancel()
+        initializationJob = null
+        try {
+            bluetoothGatt?.disconnect()
+            bluetoothGatt?.close()
+        } catch (e: Exception) {}
+        bluetoothGatt = null
+        writeCharacteristic = null
+        notifyCharacteristic = null
+        _connectionState.value = BleConnectionState.DISCONNECTED
+
+        serviceScope.launch {
+            delay(2000)
+            val lastMac = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_MAC, null)
+            if (!lastMac.isNullOrEmpty() && _connectionState.value == BleConnectionState.DISCONNECTED) {
+                Log.i(TAG, "Auto-reconnecting to $lastMac after dead GATT recovery")
+                connect(lastMac)
+            } else if (_connectionState.value == BleConnectionState.DISCONNECTED) {
+                startScan()
+            }
+        }
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
@@ -439,6 +516,16 @@ class LenovoWatchBleService : Service() {
                     bluetoothGatt = null
                     writeCharacteristic = null
                     notifyCharacteristic = null
+
+                    // Auto-reconnect after disconnection
+                    serviceScope.launch {
+                        delay(2500)
+                        val lastMac = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_MAC, null)
+                        if (!lastMac.isNullOrEmpty() && _connectionState.value == BleConnectionState.DISCONNECTED) {
+                            Log.i(TAG, "Attempting auto-reconnect to $lastMac after disconnection...")
+                            connect(lastMac)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in onConnectionStateChange", e)
@@ -690,6 +777,9 @@ class LenovoWatchBleService : Service() {
                 val isSuccess = res == BluetoothStatusCodes.SUCCESS
                 if (!isSuccess) {
                     Log.e(TAG, "gatt.writeCharacteristic (API 33+) failed with code: $res")
+                    if (res == BluetoothStatusCodes.ERROR_DEVICE_NOT_CONNECTED || res == BluetoothStatusCodes.ERROR_PROFILE_SERVICE_NOT_BOUND) {
+                        handleDeadGatt("GATT write failure status $res")
+                    }
                 }
                 isSuccess
             } else {
@@ -705,7 +795,10 @@ class LenovoWatchBleService : Service() {
                 res
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Exception during writeCharacteristic", e)
+            Log.e(TAG, "Exception during writeCharacteristic: ${e.message}", e)
+            if (e is android.os.DeadObjectException || e.cause is android.os.DeadObjectException) {
+                handleDeadGatt("DeadObjectException in writeCharacteristic")
+            }
             false
         }
     }
@@ -738,6 +831,18 @@ class LenovoWatchBleService : Service() {
             Log.i(TAG, "Step 3/7: Synchronizing Watch Clock (Real Time & Motors)")
             sendPacket(LenovoWatchProtocol.buildSetTimePacket(seq = seq++))
             delay(150)
+
+            // Push saved user preferences
+            sendPacket(LenovoWatchProtocol.buildTimeFormatPacket(_is24Hour.value, seq++))
+            delay(100)
+            sendPacket(LenovoWatchProtocol.buildUnitPacket(_isMetric.value, seq++))
+            delay(100)
+            sendPacket(LenovoWatchProtocol.buildLanguagePacket(_isEnglish.value, seq++))
+            delay(100)
+            sendPacket(LenovoWatchProtocol.buildLiftToWakePacket(_tiltEnabled.value, seq++))
+            delay(100)
+            sendPacket(LenovoWatchProtocol.buildDndPacket(_dndEnabled.value, seq++))
+            delay(100)
 
             // 4. Query Firmware Version
             Log.i(TAG, "Step 4/7: Querying Firmware Version")
@@ -803,11 +908,18 @@ class LenovoWatchBleService : Service() {
     fun measureHeartRate() {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         _isMeasuringHr.value = true
+        Log.i(TAG, "Starting optical PPG heart rate measurement")
+        // Start green optical sensor on watch
+        sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = true, seq = seq++))
+        // Query stored HR reading as well
         sendPacket(LenovoWatchProtocol.buildHeartRateQueryPacket(seq++))
 
         serviceScope.launch {
-            delay(10000)
+            // Keep sensor sampling for 20 seconds
+            delay(20_000)
             _isMeasuringHr.value = false
+            // Turn off optical sensor LEDs to conserve battery
+            sendPacket(LenovoWatchProtocol.buildHeartRateMeasurementPacket(start = false, seq = seq++))
         }
     }
 
@@ -820,13 +932,26 @@ class LenovoWatchBleService : Service() {
     fun calibrateHands(hour: Int, minute: Int) {
         if (_connectionState.value != BleConnectionState.CONNECTED) return
         serviceScope.launch {
+            Log.i(TAG, "Calibrating mechanical hands to $hour:$minute")
+            // 1. Enter calibration mode
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x31, 0x01), LenovoWatchProtocol.ACTION_TASK, seq++))
             delay(200)
-            sendPacket(LenovoWatchProtocol.buildCalibrationPositionPacket(hour, minute, seq++))
+            // 2. Keep-alive
+            sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x34), LenovoWatchProtocol.ACTION_KEEP_ALIVE, seq++))
+            delay(150)
+            // 3. Hour hand motor 1 position
+            val hourSec = ((hour % 12) * 60 + minute) * 60
+            sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x33, 0x01, ((hourSec shr 8) and 0xFF).toByte(), (hourSec and 0xFF).toByte()), LenovoWatchProtocol.ACTION_TASK, seq++))
+            delay(250)
+            // 4. Minute hand motor 2 position
+            val minSec = (minute % 60) * 60
+            sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x33, 0x02, ((minSec shr 8) and 0xFF).toByte(), (minSec and 0xFF).toByte()), LenovoWatchProtocol.ACTION_TASK, seq++))
             delay(300)
-            syncTime()
-            delay(200)
+            // 5. Exit calibration mode
             sendPacket(LenovoWatchProtocol.buildPacket(byteArrayOf(0x03, 0x31, 0x00), LenovoWatchProtocol.ACTION_TASK, seq++))
+            delay(200)
+            // 6. Push real time so the watch calculates delta steps and rotates hands into place!
+            syncTime()
         }
     }
 
@@ -838,20 +963,23 @@ class LenovoWatchBleService : Service() {
 
     fun setDnd(enabled: Boolean) {
         _dndEnabled.value = enabled
-        if (_connectionState.value != BleConnectionState.CONNECTED) return
-        val packet = LenovoWatchProtocol.buildDndPacket(enabled, seq++)
-        sendPacket(packet)
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_DND, enabled).apply()
+        if (_connectionState.value == BleConnectionState.CONNECTED) {
+            sendPacket(LenovoWatchProtocol.buildDndPacket(enabled, seq++))
+        }
     }
 
     fun setLiftToWake(enabled: Boolean) {
         _tiltEnabled.value = enabled
-        if (_connectionState.value != BleConnectionState.CONNECTED) return
-        val packet = LenovoWatchProtocol.buildLiftToWakePacket(enabled, seq++)
-        sendPacket(packet)
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_TILT, enabled).apply()
+        if (_connectionState.value == BleConnectionState.CONNECTED) {
+            sendPacket(LenovoWatchProtocol.buildLiftToWakePacket(enabled, seq++))
+        }
     }
 
     fun setTimeFormat(is24Hour: Boolean) {
         _is24Hour.value = is24Hour
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_24HOUR, is24Hour).apply()
         if (_connectionState.value == BleConnectionState.CONNECTED) {
             sendPacket(LenovoWatchProtocol.buildTimeFormatPacket(is24Hour, seq++))
         }
@@ -859,6 +987,7 @@ class LenovoWatchBleService : Service() {
 
     fun setUnit(isMetric: Boolean) {
         _isMetric.value = isMetric
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_METRIC, isMetric).apply()
         if (_connectionState.value == BleConnectionState.CONNECTED) {
             sendPacket(LenovoWatchProtocol.buildUnitPacket(isMetric, seq++))
         }
@@ -866,6 +995,7 @@ class LenovoWatchBleService : Service() {
 
     fun setLanguage(isEnglish: Boolean) {
         _isEnglish.value = isEnglish
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_ENGLISH, isEnglish).apply()
         if (_connectionState.value == BleConnectionState.CONNECTED) {
             sendPacket(LenovoWatchProtocol.buildLanguagePacket(isEnglish, seq++))
         }
@@ -873,6 +1003,7 @@ class LenovoWatchBleService : Service() {
 
     fun setSedentary(enabled: Boolean, startHour: Int = 9, endHour: Int = 18, intervalMin: Int = 60) {
         _sedentaryEnabled.value = enabled
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_SEDENTARY, enabled).apply()
         if (_connectionState.value == BleConnectionState.CONNECTED) {
             sendPacket(LenovoWatchProtocol.buildSedentaryPacket(enabled, startHour, endHour, intervalMin, seq++))
         }
@@ -880,6 +1011,7 @@ class LenovoWatchBleService : Service() {
 
     fun setDrinkWater(enabled: Boolean, intervalHours: Int = 2) {
         _drinkWaterEnabled.value = enabled
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_DRINK_WATER, enabled).apply()
         if (_connectionState.value == BleConnectionState.CONNECTED) {
             sendPacket(LenovoWatchProtocol.buildDrinkWaterPacket(enabled, intervalHours, seq++))
         }
@@ -899,7 +1031,10 @@ class LenovoWatchBleService : Service() {
     }
 
     fun findMyWatch() {
-        pushNotification("FIND WATCH", "VIBRATING...", 1024)
+        if (_connectionState.value != BleConnectionState.CONNECTED) return
+        Log.i(TAG, "Triggering Find My Watch vibration motor pulse")
+        sendPacket(LenovoWatchProtocol.buildVibrationPacket(count = 3, seq = seq++))
+        pushNotification("FIND WATCH", "Vibrating...", 1024)
     }
 
     private fun triggerFindPhoneAlarm() {
